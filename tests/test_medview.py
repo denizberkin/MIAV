@@ -136,7 +136,13 @@ def test_end_to_end() -> None:
     assert win.viewer_sagittal.expand_btn.text() == "Expand"
     assert win.viewer_axial.isVisible()
 
-    # 6. Test Search Filters for Analytics & Transforms
+    # 6. Test Search Filters, Active Analytics Slot Notation & Transform Splitter
+    assert win.transform_panel.splitter.count() == 2
+    # Check that default Slot A & Slot B plugins are highlighted in the left analytics list with slot labels
+    items_text = [win.plugin_list.item(i).text() for i in range(win.plugin_list.count())]
+    assert any("— Slot A" in t for t in items_text), f"Missing Slot A notation in {items_text}"
+    assert any("— Slot B" in t for t in items_text), f"Missing Slot B notation in {items_text}"
+
     win.analytics_search.setText("k-space")
     assert win.plugin_list.count() == 1
     win.analytics_search.setText("")

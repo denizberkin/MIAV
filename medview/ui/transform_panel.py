@@ -1,6 +1,7 @@
 """
 Interactive Image Transform & Albumentations Pipeline UI Panel.
 Includes live search filter, hover tooltips with full names, long-dash remove buttons,
+resizable vertical splitter between Available Transforms and Active Stack,
 and auto-generated parameter sliders.
 """
 
@@ -21,6 +22,7 @@ from medview.ui.qt_compat import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSplitter,
     Qt,
     QVBoxLayout,
     QWidget,
@@ -149,7 +151,16 @@ class TransformPipelinePanel(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        # Search + Add Row
+        # Resizable Vertical Splitter: Top = Available Transforms List, Bottom = Active Stack
+        self.splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self.splitter.setChildrenCollapsible(False)
+
+        # --- Top Pane: Search + Available Transforms Catalog ---
+        top_pane = QWidget(self.splitter)
+        top_layout = QVBoxLayout(top_pane)
+        top_layout.setContentsMargins(0, 0, 0, 2)
+        top_layout.setSpacing(5)
+
         search_row = QHBoxLayout()
         search_row.setSpacing(5)
         self.search_edit = QLineEdit()
@@ -161,15 +172,19 @@ class TransformPipelinePanel(QWidget):
         add_btn.setToolTip("Add selected transform to active stack")
         add_btn.clicked.connect(self._on_add_clicked)
         search_row.addWidget(add_btn)
-        layout.addLayout(search_row)
+        top_layout.addLayout(search_row)
 
-        # Compact Searchable Catalog List (Double-click or click Add)
-        self.catalog_list = QListWidget(self)
-        self.catalog_list.setMaximumHeight(135)
+        self.catalog_list = QListWidget(top_pane)
+        self.catalog_list.setMinimumHeight(75)
         self.catalog_list.itemDoubleClicked.connect(self._on_item_double_clicked)
-        layout.addWidget(self.catalog_list)
+        top_layout.addWidget(self.catalog_list, 1)
 
-        # Active Stack Header: Enable Checkbox + Clear Button
+        # --- Bottom Pane: Active Transform Stack ---
+        bottom_pane = QWidget(self.splitter)
+        bottom_layout = QVBoxLayout(bottom_pane)
+        bottom_layout.setContentsMargins(0, 4, 0, 0)
+        bottom_layout.setSpacing(5)
+
         stack_hdr = QHBoxLayout()
         self.global_cb = QCheckBox("Active Stack")
         self.global_cb.setChecked(True)
@@ -180,10 +195,9 @@ class TransformPipelinePanel(QWidget):
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self.clear_pipeline)
         stack_hdr.addWidget(clear_btn)
-        layout.addLayout(stack_hdr)
+        bottom_layout.addLayout(stack_hdr)
 
-        # Scroll Area for Active Transform Cards
-        self.scroll = QScrollArea(self)
+        self.scroll = QScrollArea(bottom_pane)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.cards_container = QWidget()
@@ -192,7 +206,13 @@ class TransformPipelinePanel(QWidget):
         self.cards_layout.setSpacing(6)
         self.cards_layout.addStretch(1)
         self.scroll.setWidget(self.cards_container)
-        layout.addWidget(self.scroll, 1)
+        bottom_layout.addWidget(self.scroll, 1)
+
+        self.splitter.addWidget(top_pane)
+        self.splitter.addWidget(bottom_pane)
+        self.splitter.setSizes([210, 340])
+
+        layout.addWidget(self.splitter, 1)
 
         import_btn = QPushButton("Import .py Script...")
         import_btn.clicked.connect(self.importScriptRequested.emit)

@@ -382,7 +382,10 @@ class MedViewMainWindow(QMainWindow):
 
         for slot in (self.slot_a, self.slot_b, self.slot_c):
             slot.hideRequested.connect(self._on_slot_hide_requested)
+            slot.pluginAssigned.connect(lambda _title, _pid: self._update_active_analytics_sidebar_highlights())
             self.analytics_splitter.addWidget(slot)
+
+        self._update_active_analytics_sidebar_highlights()
 
         rp_layout.addWidget(self.analytics_splitter, 1)
         self.main_splitter.addWidget(self.right_panel_container)
@@ -450,6 +453,7 @@ class MedViewMainWindow(QMainWindow):
         self.toggle_right_btn.blockSignals(True)
         self.toggle_right_btn.setChecked(visible)
         self.toggle_right_btn.blockSignals(False)
+        self._update_active_analytics_sidebar_highlights()
         if visible:
             self.refresh_all_analytics(immediate=True)
 
@@ -461,15 +465,29 @@ class MedViewMainWindow(QMainWindow):
 
     def _on_slot_hide_requested(self, slot: AnalyticsSlotWidget) -> None:
         slot.setVisible(False)
-        if not any(s.isVisible() for s in (self.slot_a, self.slot_b, self.slot_c)):
+        self._update_active_analytics_sidebar_highlights()
+        if not any(not s.isHidden() for s in (self.slot_a, self.slot_b, self.slot_c)):
             self.set_right_panel_visible(False)
 
     def _show_next_hidden_slot(self) -> None:
         for slot in (self.slot_a, self.slot_b, self.slot_c):
-            if not slot.isVisible():
+            if slot.isHidden():
                 slot.setVisible(True)
+                self._update_active_analytics_sidebar_highlights()
                 self.refresh_all_analytics(immediate=True)
                 return
+
+    def _update_active_analytics_sidebar_highlights(self) -> None:
+        """
+        Highlight active analytics in the left list with a notation of which
+        visible slot(s) they are assigned to (e.g., '— Slot A').
+        """
+        slot_map: dict[str, list[str]] = {}
+        if not self.right_panel_container.isHidden():
+            for slot in (self.slot_a, self.slot_b, self.slot_c):
+                if not slot.isHidden():
+                    slot_map.setdefault(slot.active_plugin_id, []).append(slot.slot_title)
+        self.plugin_list.set_active_slot_map(slot_map)
 
     # =========================================================================
     # Active View Selection & Highlight Rectangle
@@ -859,3 +877,4 @@ class MedViewMainWindow(QMainWindow):
         self.transform_panel.refresh_catalog()
         for slot in (self.slot_a, self.slot_b, self.slot_c):
             slot.refresh_plugin_choices()
+        self._update_active_analytics_sidebar_highlights()

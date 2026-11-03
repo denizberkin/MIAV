@@ -1,6 +1,7 @@
 """
 Drag-and-Drop Divided Screen Analytics Dock Slot & Searchable Draggable Plugin Sidebar List.
-Skips any calculation when a slot or panel is hidden/closed for zero lag.
+Highlights active analytics in the left list with their assigned slot notation (e.g. Slot A, Slot B),
+and skips any calculation when a slot or panel is hidden/closed for zero lag.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import traceback
 from typing import Optional
 
 from medview.ui.qt_compat import (
+    QColor,
     QComboBox,
     QDrag,
     QFrame,
@@ -35,7 +37,10 @@ MIME_ANALYTICS_PLUGIN = "application/x-medview-analytics-plugin"
 
 
 class DraggableAnalyticsListWidget(QListWidget):
-    """Sidebar list of available `@analytics_plugin` modules with search filter and hover tooltips."""
+    """
+    Sidebar list of available `@analytics_plugin` modules with search filter,
+    hover tooltips, and live highlight + slot notation for active analytics.
+    """
 
     pluginDoubleClicked = Signal(str)  # plugin_id
 
@@ -45,6 +50,47 @@ class DraggableAnalyticsListWidget(QListWidget):
         self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.itemDoubleClicked.connect(self._on_double_clicked)
         self._search_query: str = ""
+        self._active_slot_map: dict[str, list[str]] = {}
+
+    def set_active_slot_map(self, slot_map: dict[str, list[str]]) -> None:
+        """
+        Update mapping of `plugin_id -> list of visible slot names` (e.g. `{'intensity_histogram_otsu': ['Slot A']}`)
+        and refresh item labels and highlights.
+        """
+        self._active_slot_map = {k: list(v) for k, v in slot_map.items() if v}
+        self._refresh_item_badges_in_place()
+
+    def _refresh_item_badges_in_place(self) -> None:
+        for i in range(self.count()):
+            item = self.item(i)
+            if item is None:
+                continue
+            pid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            spec = REGISTRY.analytics.get(pid)
+            if spec is None:
+                continue
+            self._apply_item_style(item, pid, spec)
+
+    def _apply_item_style(self, item: QListWidgetItem, pid: str, spec) -> None:
+        slots = self._active_slot_map.get(pid, [])
+        font = item.font()
+        if slots:
+            slots_label = ", ".join(slots)
+            item.setText(f"{spec.name}  [{spec.category}]  — {slots_label}")
+            font.setBold(True)
+            item.setFont(font)
+            item.setForeground(QColor("#60a5fa"))
+            item.setBackground(QColor("#1e2638"))
+            item.setToolTip(
+                f"Active in: {slots_label}\n\n{spec.tooltip_text}\n\nDrag & drop into any Analytics Slot on the right."
+            )
+        else:
+            item.setText(f"{spec.name}  [{spec.category}]")
+            font.setBold(False)
+            item.setFont(font)
+            item.setForeground(QColor("#e4e4e7"))
+            item.setBackground(QColor("#18181c"))
+            item.setToolTip(f"{spec.tooltip_text}\n\nDrag & drop into any Analytics Slot on the right.")
 
     def populate_from_registry(self, search_query: Optional[str] = None) -> None:
         if search_query is not None:
@@ -56,9 +102,9 @@ class DraggableAnalyticsListWidget(QListWidget):
             haystack = f"{spec.name} {spec.full_name} {spec.category} {spec.description}".lower()
             if q and q not in haystack:
                 continue
-            item = QListWidgetItem(f"{spec.name}  [{spec.category}]")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, pid)
-            item.setToolTip(f"{spec.tooltip_text}\n\nDrag & drop into any Analytics Slot on the right.")
+            self._apply_item_style(item, pid, spec)
             self.addItem(item)
 
     def _on_double_clicked(self, item: QListWidgetItem) -> None:
@@ -134,7 +180,6 @@ class AnalyticsSlotWidget(QFrame):
         self.canvas = FigureCanvasQTAgg(self.figure)
         layout.addWidget(self.canvas, 1)
 
-        # Conflation debounce timer so rapid mouse-wheel scrolling stays silky smooth
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(40)
@@ -201,7 +246,6 @@ class AnalyticsSlotWidget(QFrame):
             self._render_timer.stop()
             self._execute_pending_render()
         else:
-            # Restart single-shot timer so rapid slice scrolling conflates into 1 render
             self._render_timer.start()
 
     def _execute_pending_render(self) -> None:
