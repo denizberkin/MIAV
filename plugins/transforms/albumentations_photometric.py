@@ -21,7 +21,7 @@ from medview.plugin_sdk import Param, transform_plugin
     category="Contrast",
     description="Contrast Limited Adaptive Histogram Equalization via Albumentations (A.CLAHE).",
     params={
-        "clip_limit": Param(2.5, min=0.5, max=12.0, step=0.5, label="Clip Limit"),
+        "clip_limit": Param(2.5, min=1.0, max=12.0, step=0.5, label="Clip Limit"),
         "tile_grid": Param(8, min=2, max=24, step=2, label="Grid Size", kind="int"),
         "alpha": Param(1.0, min=0.0, max=1.0, step=0.05, label="Alpha"),
     },
@@ -34,8 +34,9 @@ def transform_clahe(
     alpha: float = 1.0,
 ) -> np.ndarray:
     u8, vmin, vmax = normalize_to_uint8(image)
+    cl = max(1.0, float(clip_limit))
     grid = max(2, int(tile_grid))
-    aug = A.CLAHE(clip_limit=(float(clip_limit), float(clip_limit)), tile_grid_size=(grid, grid), p=1.0)
+    aug = A.CLAHE(clip_limit=(cl, cl), tile_grid_size=(grid, grid), p=1.0)
     res_u8 = aug(image=u8)["image"]
     out = restore_from_uint8(res_u8, vmin, vmax)
     return (1.0 - float(alpha)) * image + float(alpha) * out

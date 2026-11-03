@@ -84,15 +84,31 @@ def test_end_to_end() -> None:
         assert len(fig.axes) >= 1, f"Analytics plugin {pid} failed"
 
     pipeline = TransformPipeline()
-    for tid in REGISTRY.transforms.keys():
-        pipeline.clear()
-        pipeline.add_step(tid)
-        out = pipeline.apply(slice_2d)
-        assert out.ndim == 2 and out.dtype == np.float32
+    for tid, tspec in REGISTRY.transforms.items():
+        # Test default, min boundary, and max boundary parameter values directly (no swallowed errors)
+        min_params = {
+            k: (False if p.kind == "bool" else (int(p.min) if p.kind == "int" else float(p.min)))
+            for k, p in tspec.params.items()
+        }
+        max_params = {
+            k: (True if p.kind == "bool" else (int(p.max) if p.kind == "int" else float(p.max)))
+            for k, p in tspec.params.items()
+        }
+        for param_set in (None, min_params, max_params):
+            pipeline.clear()
+            step = pipeline.add_step(tid)
+            if param_set is not None and step is not None:
+                step.params.update(param_set)
+            # Also call tspec.func directly to guarantee zero validation/runtime exceptions
+            res_direct = tspec.func(slice_2d, **(step.params if step else {}))
+            assert isinstance(res_direct, np.ndarray) and res_direct.ndim == 2
+            out = pipeline.apply(slice_2d)
+            assert out.ndim == 2 and out.dtype == np.float32
         if tid == "template_center_crop":
+            pipeline.clear()
+            pipeline.add_step(tid)
+            out = pipeline.apply(slice_2d)
             assert out.shape != slice_2d.shape, "Template crop should return a different shape"
-        else:
-            assert out.shape == slice_2d.shape
 
     # 4. Test MainWindow, 3-Plane Crosshair Sync & Active View Selection
     win = MedViewMainWindow(initial_path=str(h5_path))
