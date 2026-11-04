@@ -12,14 +12,14 @@ FAQ:
   a 2x2 grid (`fig.subplots(2, 2)`), or a custom `fig.add_gridspec(...)`.
 - Can I just return a 2D/RGB NumPy image instead of using Matplotlib?
   Yes! If your function returns a 2D `(H, W)` or 3D `(H, W, 3)` `np.ndarray` without plotting,
-  MedView automatically displays that image in the analytics slot.
+  MIAV automatically displays that image in the analytics slot.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from medview.plugin_sdk import AnalysisContext, analytics_plugin
+from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
 
 @analytics_plugin(

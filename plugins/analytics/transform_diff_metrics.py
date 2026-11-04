@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from scipy import ndimage as ndi
 
-from medview.plugin_sdk import AnalysisContext, analytics_plugin
+from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
 
 @analytics_plugin(

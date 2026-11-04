@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from medview.plugin_sdk import AnalysisContext, analytics_plugin
+from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
 
 @analytics_plugin(

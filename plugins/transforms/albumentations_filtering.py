@@ -12,8 +12,8 @@ import albumentations as A
 import numpy as np
 from scipy import ndimage as ndi
 
-from medview.core.transform_pipeline import normalize_to_uint8, restore_from_uint8
-from medview.plugin_sdk import Param, transform_plugin
+from miav.core.transform_pipeline import normalize_to_uint8, restore_from_uint8
+from miav.plugin_sdk import Param, transform_plugin
 
 
 @transform_plugin(

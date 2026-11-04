@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from medview.core.transform_pipeline import blend_with_alpha
-from medview.plugin_sdk import Param, transform_plugin
+from miav.core.transform_pipeline import blend_with_alpha
+from miav.plugin_sdk import Param, transform_plugin
 
 
 @transform_plugin(

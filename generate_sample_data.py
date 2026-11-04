@@ -18,7 +18,7 @@ import pydicom
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-from medview.core.synthetic import generate_brain_3d_array
+from miav.core.synthetic import generate_brain_3d_array
 
 
 def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
@@ -117,7 +117,7 @@ def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
             ds.PatientName = "BrainPhantom^HeadCT"
             ds.PatientID = "CT_HEAD_001"
             ds.Modality = "CT"
-            ds.Manufacturer = "NeuroScope Synthetic CT"
+            ds.Manufacturer = "MIAV Synthetic CT"
             ds.StudyDescription = "Head CT Trauma Non-Contrast"
             ds.SeriesDescription = "Axial Head CT 2.5mm"
             ds.StudyInstanceUID = study_uid

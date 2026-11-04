@@ -12,10 +12,10 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from medview.core.data_models import MedicalVolume
-from medview.core.transform_pipeline import TransformPipeline
-from medview.ui.annotation_overlay import AnnotationOverlay
-from medview.ui.qt_compat import (
+from miav.core.data_models import MedicalVolume
+from miav.core.transform_pipeline import TransformPipeline
+from miav.ui.annotation_overlay import AnnotationOverlay
+from miav.ui.qt_compat import (
     QColor,
     QComboBox,
     QFont,
@@ -38,7 +38,7 @@ from medview.ui.qt_compat import (
     Signal,
     event_pos_f,
 )
-from medview.ui.volume_3d_viewer import Interactive3DCanvas
+from miav.ui.volume_3d_viewer import Interactive3DCanvas
 
 
 class FastSliceCanvas(QWidget):

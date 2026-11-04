@@ -8,7 +8,7 @@ import numpy as np
 from skimage.filters import threshold_multiotsu
 from sklearn.cluster import KMeans
 
-from medview.plugin_sdk import AnalysisContext, analytics_plugin
+from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
 
 @analytics_plugin(

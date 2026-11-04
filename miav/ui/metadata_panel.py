@@ -9,8 +9,8 @@ from typing import Optional
 
 import polars as pl
 
-from medview.core.data_models import MedicalVolume
-from medview.ui.qt_compat import (
+from miav.core.data_models import MedicalVolume
+from miav.ui.qt_compat import (
     QFrame,
     QHBoxLayout,
     QHeaderView,

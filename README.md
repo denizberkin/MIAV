@@ -1,6 +1,22 @@
-# NeuroScope MedView Studio — 2D/3D MRI, CT, FastMRI & Real-Time Python Analytics Workstation
+# MIAV — Medical Image Analytics & Viewer
 
-A high-performance, cross-platform desktop medical imaging and real-time scientific Python analytics workstation built for **Windows 11** and **Ubuntu Linux**.
+**Medical image viewer with real time analytics, transforms from python and a 3d volume renderer.**
+
+Works with:
+- nifti
+- dicom
+- hdf5
+
+You can add:
+- own analytics (matplotlib, scikit-image, etc.)
+- metadata csv
+- own image transforms (albumentations, opencv, scipy, etc.)
+
+Need to write your own analytics and transforms **in python** :'(, refer to examples in `plugins/analytics` and **[writing custom plugins below](#writing-custom-python-analytics--transform-plugins)**. You can also use the built-in transforms and analytics.
+
+
+
+Below is some ai text to help you get it working. Hopefully it will be easier to understand than my explanation of it.
 
 ## Key Features
 
@@ -32,7 +48,7 @@ A high-performance, cross-platform desktop medical imaging and real-time scienti
 ```bash
 pip install -r requirements.txt
 ```
-*(Supports `PySide6`, `PyQt6`, or `PyQt5` automatically via [`medview/ui/qt_compat.py`](medview/ui/qt_compat.py)).*
+*(Supports `PySide6`, `PyQt6`, or `PyQt5` automatically via [`miav/ui/qt_compat.py`](miav/ui/qt_compat.py)).*
 
 ### 2. Generate Sample 3D Datasets (Optional)
 ```bash
@@ -82,7 +98,7 @@ Drop any `.py` script into `plugins/analytics/` or `plugins/transforms/` (or loa
 ### 1. Custom Analytics Plugin (`@analytics_plugin`)
 ```python
 import numpy as np
-from medview.plugin_sdk import analytics_plugin, AnalysisContext
+from miav.plugin_sdk import analytics_plugin, AnalysisContext
 
 @analytics_plugin(
     name="My Custom Slice Histogram",
@@ -100,8 +116,8 @@ def my_custom_histogram(ctx: AnalysisContext, fig):
 ```python
 import albumentations as A
 import numpy as np
-from medview.plugin_sdk import transform_plugin, Param
-from medview.core.transform_pipeline import normalize_to_uint8, restore_from_uint8
+from miav.plugin_sdk import transform_plugin, Param
+from miav.core.transform_pipeline import normalize_to_uint8, restore_from_uint8
 
 @transform_plugin(
     name="Custom Albumentations Solarize",

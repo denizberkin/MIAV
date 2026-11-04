@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Optional
 
-from medview.ui.qt_compat import (
+from miav.ui.qt_compat import (
     QColor,
     QMouseEvent,
     QPainter,

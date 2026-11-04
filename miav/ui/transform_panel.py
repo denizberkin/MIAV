@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from medview.core.transform_pipeline import ActiveTransformStep, TransformPipeline
-from medview.plugin_sdk import REGISTRY, Param
-from medview.ui.qt_compat import (
+from miav.core.transform_pipeline import ActiveTransformStep, TransformPipeline
+from miav.plugin_sdk import REGISTRY, Param
+from miav.ui.qt_compat import (
     QCheckBox,
     QFrame,
     QHBoxLayout,

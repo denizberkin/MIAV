@@ -10,7 +10,7 @@ import inspect
 import traceback
 from typing import Optional
 
-from medview.ui.qt_compat import (
+from miav.ui.qt_compat import (
     QColor,
     QComboBox,
     QDrag,
@@ -31,9 +31,9 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import numpy as np
 
-from medview.plugin_sdk import REGISTRY, AnalysisContext
+from miav.plugin_sdk import REGISTRY, AnalysisContext
 
-MIME_ANALYTICS_PLUGIN = "application/x-medview-analytics-plugin"
+MIME_ANALYTICS_PLUGIN = "application/x-miav-analytics-plugin"
 
 
 class DraggableAnalyticsListWidget(QListWidget):

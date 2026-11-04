@@ -1,5 +1,5 @@
 """
-NeuroScope MedView Studio — Entry Point.
+MIAV — Medical Image Analytics & Viewer Entry Point.
 Run on Windows 11 or Ubuntu Linux via:
     python main.py [optional_file_or_dicom_folder_path]
 """
@@ -13,13 +13,13 @@ import sys
 os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
 
 from generate_sample_data import generate_all_samples
-from medview.ui.main_window import MedViewMainWindow
-from medview.ui.qt_compat import QApplication
+from miav.ui.main_window import MiavMainWindow
+from miav.ui.qt_compat import QApplication
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="NeuroScope MedView Studio — 2D/3D MRI, CT, FastMRI & Real-Time Python Analytics Workstation"
+        description="MIAV — Medical Image Analytics & Viewer (2D/3D MRI, CT, FastMRI & Real-Time Python Analytics)"
     )
     parser.add_argument(
         "path",
@@ -38,9 +38,9 @@ def main() -> int:
         generate_all_samples()
 
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("NeuroScope MedView Studio")
+    app.setApplicationName("MIAV")
 
-    window = MedViewMainWindow(initial_path=args.path)
+    window = MiavMainWindow(initial_path=args.path)
     window.show()
     exec_fn = getattr(app, "exec", None) or getattr(app, "exec_")
     return int(exec_fn())

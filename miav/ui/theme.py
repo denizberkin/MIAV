@@ -1,5 +1,5 @@
 """
-Refined Graphite Dark Theme & Qt Stylesheet for NeuroScope MedView Studio.
+Refined Graphite Dark Theme & Qt Stylesheet for MIAV.
 """
 
 from __future__ import annotations

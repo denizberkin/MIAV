@@ -1,5 +1,5 @@
 """
-End-to-End Automated Test Suite for NeuroScope MedView Studio.
+End-to-End Automated Test Suite for MIAV (Medical Image Analytics & Viewer).
 Tests NIfTI / FastMRI HDF5+CSV / DICOM 3D loaders, Polars metadata filtering,
 all `@analytics_plugin` modules, all Albumentations `@transform_plugin` modules,
 dynamic `.py` script importing, 3-plane crosshair synchronization, active-view
@@ -18,15 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
 
-from medview.ui.qt_compat import QApplication, QMouseEvent, QPointF, Qt
+from miav.ui.qt_compat import QApplication, QMouseEvent, QPointF, Qt
 from matplotlib.figure import Figure
 import numpy as np
 
 from generate_sample_data import generate_all_samples
-from medview.core.loaders import attach_external_csv, load_medical_path
-from medview.core.transform_pipeline import TransformPipeline
-from medview.plugin_sdk import REGISTRY, AnalysisContext
-from medview.ui.main_window import MedViewMainWindow
+from miav.core.loaders import attach_external_csv, load_medical_path
+from miav.core.transform_pipeline import TransformPipeline
+from miav.plugin_sdk import REGISTRY, AnalysisContext
+from miav.ui.main_window import MiavMainWindow
 
 
 def test_end_to_end() -> None:
@@ -111,7 +111,7 @@ def test_end_to_end() -> None:
             assert out.shape != slice_2d.shape, "Template crop should return a different shape"
 
     # 4. Test MainWindow, 3-Plane Crosshair Sync & Active View Selection
-    win = MedViewMainWindow(initial_path=str(h5_path))
+    win = MiavMainWindow(initial_path=str(h5_path))
     win.show()
     app.processEvents()
 

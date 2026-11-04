@@ -13,9 +13,9 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from medview.core.data_models import MedicalVolume
-from medview.ui.annotation_overlay import AnnotationOverlay
-from medview.ui.qt_compat import (
+from miav.core.data_models import MedicalVolume
+from miav.ui.annotation_overlay import AnnotationOverlay
+from miav.ui.qt_compat import (
     QColor,
     QComboBox,
     QFont,

@@ -9,7 +9,7 @@ import numpy as np
 from scipy import stats
 from skimage.filters import threshold_otsu
 
-from medview.plugin_sdk import AnalysisContext, analytics_plugin
+from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
 
 @analytics_plugin(

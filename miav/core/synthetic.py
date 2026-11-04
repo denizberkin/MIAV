@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from medview.core.data_models import MedicalVolume
+from miav.core.data_models import MedicalVolume
 
 
 def generate_brain_3d_array(

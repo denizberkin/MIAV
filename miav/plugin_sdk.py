@@ -1,5 +1,5 @@
 """
-Public Plugin SDK for NeuroScope MedView Studio.
+Public Plugin SDK for MIAV (Medical Image Analytics & Viewer).
 
 Users can write modular Python analytics functions (`@analytics_plugin`)
 and live image/volume transformations (`@transform_plugin`) using standard
@@ -159,7 +159,7 @@ class PluginRegistry:
         before_a = set(self.analytics.keys())
         before_t = set(self.transforms.keys())
 
-        mod_name = f"medview_user_plugin_{path.stem}_{abs(hash(str(path))) % 100000}"
+        mod_name = f"miav_user_plugin_{path.stem}_{abs(hash(str(path))) % 100000}"
         spec = importlib.util.spec_from_file_location(mod_name, str(path))
         if spec is None or spec.loader is None:
             return ([], [])
@@ -179,12 +179,12 @@ class PluginRegistry:
             obj = getattr(module, attr_name)
             if not callable(obj) or getattr(obj, "__module__", None) != module.__name__:
                 continue
-            if hasattr(obj, "_medview_analytics_spec"):
-                a_spec: AnalyticsPluginSpec = getattr(obj, "_medview_analytics_spec")
+            if hasattr(obj, "_miav_analytics_spec"):
+                a_spec: AnalyticsPluginSpec = getattr(obj, "_miav_analytics_spec")
                 a_spec.source_path = str(path)
                 self.register_analytics(a_spec)
-            elif hasattr(obj, "_medview_transform_spec"):
-                t_spec: TransformPluginSpec = getattr(obj, "_medview_transform_spec")
+            elif hasattr(obj, "_miav_transform_spec"):
+                t_spec: TransformPluginSpec = getattr(obj, "_miav_transform_spec")
                 t_spec.source_path = str(path)
                 self.register_transform(t_spec)
             elif attr_name.startswith("analyze_") and attr_name not in self.analytics:
@@ -261,7 +261,7 @@ def analytics_plugin(
             func=func,
             output=output,
         )
-        setattr(func, "_medview_analytics_spec", spec)
+        setattr(func, "_miav_analytics_spec", spec)
         REGISTRY.register_analytics(spec)
         return func
 
@@ -295,7 +295,7 @@ def transform_plugin(
             func=func,
             params=param_dict,
         )
-        setattr(func, "_medview_transform_spec", spec)
+        setattr(func, "_miav_transform_spec", spec)
         REGISTRY.register_transform(spec)
         return func
 

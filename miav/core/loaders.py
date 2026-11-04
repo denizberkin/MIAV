@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pydicom
 
-from medview.core.data_models import MedicalVolume
+from miav.core.data_models import MedicalVolume
 
 
 def _build_meta_df(rows: list[dict[str, str]]) -> pl.DataFrame:

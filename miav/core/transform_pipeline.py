@@ -13,7 +13,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from medview.plugin_sdk import REGISTRY, TransformPluginSpec
+from miav.plugin_sdk import REGISTRY, TransformPluginSpec
 
 
 @dataclass

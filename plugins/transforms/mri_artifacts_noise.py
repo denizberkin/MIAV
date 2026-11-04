@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from medview.plugin_sdk import Param, transform_plugin
+from miav.plugin_sdk import Param, transform_plugin
 
 
 @transform_plugin(

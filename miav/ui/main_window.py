@@ -1,5 +1,5 @@
 """
-Main Workstation Window for NeuroScope MedView Studio.
+Main Workstation Window for MIAV (Medical Image Analytics & Viewer).
 Coordinates 2D MPR Viewports, 3D Volumetric/Orthogonal Viewers,
 Drag-and-Drop Python Analytics Dock Slots, Live Albumentations Transform Pipeline,
 Presentation Annotation Modes (Cursor / Laser / Pen with Freehand, Line, Rectangle),
@@ -13,18 +13,18 @@ from typing import Optional
 
 import numpy as np
 
-from medview.core.data_models import MedicalVolume
-from medview.core.loaders import attach_external_csv, load_medical_path
-from medview.core.synthetic import (
+from miav.core.data_models import MedicalVolume
+from miav.core.loaders import attach_external_csv, load_medical_path
+from miav.core.synthetic import (
     create_synthetic_fastmri_study,
     create_synthetic_head_ct_study,
     create_synthetic_t1_mri_study,
 )
-from medview.core.transform_pipeline import TransformPipeline
-from medview.plugin_sdk import REGISTRY, AnalysisContext
-from medview.ui.analytics_dock import AnalyticsSlotWidget, DraggableAnalyticsListWidget
-from medview.ui.metadata_panel import MetadataInspectorPanel
-from medview.ui.qt_compat import (
+from miav.core.transform_pipeline import TransformPipeline
+from miav.plugin_sdk import REGISTRY, AnalysisContext
+from miav.ui.analytics_dock import AnalyticsSlotWidget, DraggableAnalyticsListWidget
+from miav.ui.metadata_panel import MetadataInspectorPanel
+from miav.ui.qt_compat import (
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -45,18 +45,18 @@ from medview.ui.qt_compat import (
     QVBoxLayout,
     QWidget,
 )
-from medview.ui.slice_viewer import SliceViewerWidget
-from medview.ui.theme import DARK_RADIOLOGY_QSS
-from medview.ui.transform_panel import TransformPipelinePanel
-from medview.ui.volume_3d_viewer import Volume3DViewerWidget
+from miav.ui.slice_viewer import SliceViewerWidget
+from miav.ui.theme import DARK_RADIOLOGY_QSS
+from miav.ui.transform_panel import TransformPipelinePanel
+from miav.ui.volume_3d_viewer import Volume3DViewerWidget
 
 
-class MedViewMainWindow(QMainWindow):
+class MiavMainWindow(QMainWindow):
     """Primary application window for 2D/3D MRI, CT, X-Ray & FastMRI analysis."""
 
     def __init__(self, initial_path: Optional[str] = None) -> None:
         super().__init__()
-        self.setWindowTitle("MedView Studio — 3D MRI & CT Analytics")
+        self.setWindowTitle("MIAV — Medical Image Analytics & Viewer")
         self.resize(1540, 920)
         self.setStyleSheet(DARK_RADIOLOGY_QSS)
 
