@@ -42,6 +42,7 @@ class MedicalVolume:
         )
     )
     external_csv_df: Optional[pl.DataFrame] = None
+    default_window: Optional[tuple[float, float]] = None  # Optional (window_width, window_level) from DICOM header
 
     def __post_init__(self) -> None:
         if self.volume.ndim == 2:
@@ -99,10 +100,18 @@ class MedicalVolume:
         return None
 
     def default_window_level(self) -> tuple[float, float]:
-        """Compute robust default (window_width, window_level) using 1st and 99th percentiles."""
+        """Compute robust default (window_width, window_level) using DICOM header or 1st–99.5th percentiles."""
+        if self.default_window is not None:
+            ww, wl = self.default_window
+            if ww > 0:
+                return (float(ww), float(wl))
         sample = self.volume[:: max(1, self.volume.shape[0] // 16)]
+        if self.modality == "MG":
+            fg = sample[sample > 0]
+            if fg.size > 100:
+                sample = fg
         p1, p99 = np.percentile(sample, [1.0, 99.5])
-        width = float(max(1e-3, p99 - p1))
+        width = float(max(1e-12, p99 - p1))
         level = float((p99 + p1) * 0.5)
         return (width, level)
 

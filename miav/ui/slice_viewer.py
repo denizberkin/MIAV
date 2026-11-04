@@ -82,8 +82,14 @@ class FastSliceCanvas(QWidget):
         self._roi_start_yx: Optional[tuple[int, int]] = None
 
         self._last_mouse_pos: Optional[QPointF] = None
+        self._cached_qimage: Optional[QImage] = None
+        self._cached_u8_buf: Optional[np.ndarray] = None
+        self._image_dirty: bool = True
         self.annotation_overlay = AnnotationOverlay(self)
         self.annotation_overlay.overlayClicked.connect(self.canvasActivated.emit)
+
+    def invalidate_image_cache(self) -> None:
+        self._image_dirty = True
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -102,6 +108,7 @@ class FastSliceCanvas(QWidget):
         self.plane = plane
         self.slice_idx = slice_idx
         self.num_slices = num_slices
+        self._image_dirty = True
         self.annotation_overlay.set_slice_context(plane, slice_idx)
         if self.isVisible():
             self.update()
@@ -133,6 +140,15 @@ class FastSliceCanvas(QWidget):
         sy = rect.top() + (row_y / max(1, h - 1)) * rect.height()
         return QPointF(sx, sy)
 
+    @staticmethod
+    def _fmt_num(val: float) -> str:
+        av = abs(val)
+        if 0.0 < av < 0.05:
+            return f"{val:.3e}"
+        if av < 10.0:
+            return f"{val:.2f}"
+        return f"{val:.1f}"
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -141,28 +157,34 @@ class FastSliceCanvas(QWidget):
 
         img = self.display_slice
         h, w = img.shape[:2]
-        vmin = self.window_level - self.window_width * 0.5
-        vmax = self.window_level + self.window_width * 0.5
-        u8 = np.clip((img - vmin) / max(1e-5, vmax - vmin) * 255.0, 0.0, 255.0).astype(np.uint8)
+        if self._image_dirty or self._cached_qimage is None:
+            vmin = self.window_level - self.window_width * 0.5
+            vmax = self.window_level + self.window_width * 0.5
+            u8 = np.clip((img - vmin) / max(1e-12, vmax - vmin) * 255.0, 0.0, 255.0).astype(np.uint8)
 
-        if self.colormap == "inferno":
-            bgr = cv2.applyColorMap(u8, cv2.COLORMAP_INFERNO)
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        elif self.colormap == "viridis":
-            bgr = cv2.applyColorMap(u8, cv2.COLORMAP_VIRIDIS)
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        elif self.colormap == "bone":
-            bgr = cv2.applyColorMap(u8, cv2.COLORMAP_BONE)
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        else:
-            u8 = np.ascontiguousarray(u8)
-            qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+            if self.colormap == "inferno":
+                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_INFERNO)
+                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                self._cached_u8_buf = rgb
+                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+            elif self.colormap == "viridis":
+                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_VIRIDIS)
+                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                self._cached_u8_buf = rgb
+                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+            elif self.colormap == "bone":
+                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_BONE)
+                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                self._cached_u8_buf = rgb
+                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+            else:
+                u8 = np.ascontiguousarray(u8)
+                self._cached_u8_buf = u8
+                self._cached_qimage = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+            self._image_dirty = False
 
         target_rect = self._compute_image_rect()
-        painter.drawImage(target_rect, qimg)
+        painter.drawImage(target_rect, self._cached_qimage)
 
         cy, cx = self.cursor_yx
         cy = int(np.clip(cy, 0, h - 1))
@@ -197,12 +219,12 @@ class FastSliceCanvas(QWidget):
         painter.drawText(
             8,
             30,
-            f"XY: ({cx}, {cy}) | Val: {val:.1f}",
+            f"XY: ({cx}, {cy}) | Val: {self._fmt_num(val)}",
         )
         painter.drawText(
             8,
             self.height() - 8,
-            f"WL: {self.window_level:.0f}/{self.window_width:.0f}",
+            f"WL: {self._fmt_num(self.window_level)}/{self._fmt_num(self.window_width)}",
         )
 
         painter.setPen(QColor("#71717a"))
@@ -483,6 +505,7 @@ class SliceViewerWidget(QFrame):
 
     def _on_cmap_changed(self) -> None:
         self.slice_canvas.colormap = str(self.cmap_combo.currentData())
+        self.slice_canvas.invalidate_image_cache()
         self.slice_canvas.update()
 
     def _on_roi_toggled(self, checked: bool) -> None:
@@ -546,8 +569,9 @@ class SliceViewerWidget(QFrame):
         return (self.slice_canvas.display_slice, self.slice_canvas.raw_slice)
 
     def set_window_level(self, width: float, level: float) -> None:
-        self.slice_canvas.window_width = max(1.0, float(width))
+        self.slice_canvas.window_width = max(1e-12, float(width))
         self.slice_canvas.window_level = float(level)
+        self.slice_canvas.invalidate_image_cache()
         if self.isVisible():
             self.slice_canvas.update()
 
@@ -556,8 +580,8 @@ class SliceViewerWidget(QFrame):
         self.cursorChanged.emit(eff_plane, self.slice_idx, row_y, col_x)
 
     def _on_wl_dragged(self, dx: float, dy: float) -> None:
-        scale = max(1.0, self.slice_canvas.window_width * 0.008)
-        new_w = max(1.0, self.slice_canvas.window_width + dx * scale)
+        scale = max(1e-12, self.slice_canvas.window_width * 0.008)
+        new_w = max(1e-12, self.slice_canvas.window_width + dx * scale)
         new_l = self.slice_canvas.window_level + dy * scale
         self.set_window_level(new_w, new_l)
         self.windowLevelChanged.emit(new_w, new_l)

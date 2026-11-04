@@ -24,11 +24,17 @@ def plot_intensity_histogram(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.13, right=0.96, top=0.84, bottom=0.18)
     ax = fig.add_subplot(111, facecolor="#18181c")
 
-    img = ctx.image_2d.astype(np.float32)
-    raw = ctx.raw_image_2d.astype(np.float32)
+    step = max(1, max(ctx.image_2d.shape[:2]) // 512)
+    img = ctx.image_2d[::step, ::step].astype(np.float32)
+    raw = ctx.raw_image_2d[::step, ::step].astype(np.float32)
 
-    p5 = np.percentile(img, 5.0)
-    fg = img[img > p5]
+    # Exclude zero/background padding (e.g., Digital Mammography or masked MRI)
+    non_zero = img[img > float(np.min(img)) + 1e-12]
+    if non_zero.size >= 32:
+        p5 = np.percentile(non_zero, 2.0)
+        fg = non_zero[non_zero >= p5]
+    else:
+        fg = img.ravel()
     if fg.size < 16:
         fg = img.ravel()
 
@@ -67,28 +73,31 @@ def plot_intensity_histogram(ctx: AnalysisContext, fig) -> None:
         )
 
     try:
-        if fg.size > 30 and float(np.std(fg)) > 1e-4:
+        if fg.size > 30 and float(np.std(fg)) > 1e-12:
             sub = fg[:: max(1, fg.size // 900)]
             kde = stats.gaussian_kde(sub)
             xs = np.linspace(float(bins[0]), float(bins[-1]), 80)
             ax.plot(xs, kde(xs), color="#93c5fd", linewidth=1.5, label="KDE")
 
             otsu_val = float(threshold_otsu(fg))
+            otsu_str = f"{otsu_val:.2e}" if 0 < abs(otsu_val) < 0.05 else f"{otsu_val:.0f}"
             ax.axvline(
                 otsu_val,
                 color="#f43f5e",
                 linestyle="--",
                 linewidth=1.4,
-                label=f"Otsu {otsu_val:.0f}",
+                label=f"Otsu {otsu_str}",
             )
     except Exception:
         pass
 
     mean_v = float(np.mean(fg))
     std_v = float(np.std(fg))
+    mean_str = f"{mean_v:.2e}" if 0 < abs(mean_v) < 0.05 else f"{mean_v:.1f}"
+    std_str = f"{std_v:.2e}" if 0 < abs(std_v) < 0.05 else f"{std_v:.1f}"
 
     ax.set_title(
-        f"{ctx.plane.title()} #{ctx.slice_idx + 1} — Mean: {mean_v:.1f} | SD: {std_v:.1f}",
+        f"{ctx.plane.title()} #{ctx.slice_idx + 1} — Mean: {mean_str} | SD: {std_str}",
         color="#e4e4e7",
         fontsize=9,
         fontweight="bold",

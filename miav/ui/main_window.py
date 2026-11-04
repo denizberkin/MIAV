@@ -65,12 +65,7 @@ class MiavMainWindow(QMainWindow):
         REGISTRY.discover_directory(plugins_dir)
 
         self.transform_pipeline = TransformPipeline()
-        self.studies: list[MedicalVolume] = [
-            create_synthetic_fastmri_study(),
-            create_synthetic_t1_mri_study(),
-            create_synthetic_head_ct_study(),
-            create_synthetic_mammography_study(),
-        ]
+        self.studies: list[MedicalVolume] = self._load_default_studies()
         self.active_volume: MedicalVolume = self.studies[0]
         self.active_roi_bounds: Optional[tuple[int, int, int, int]] = None
         self.layout_mode: str = "quad_mpr"  # Default to Quad MPR so Axial/Sagittal/Coronal sync is immediately visible
@@ -88,6 +83,32 @@ class MiavMainWindow(QMainWindow):
             self.open_path(initial_path)
         else:
             self._load_study_into_views(self.active_volume)
+
+    def _load_default_studies(self) -> list[MedicalVolume]:
+        """Load real clinical sample datasets from `./sample_data/` if present, falling back to synthetic if offline."""
+        sample_root = Path(__file__).resolve().parent.parent.parent / "sample_data"
+        real_candidates = [
+            sample_root / "fastmri_knee_singlecoil.h5",
+            sample_root / "vindr_mammo_r_cc.dcm",
+            sample_root / "vindr_mammo_r_mlo.dcm",
+            sample_root / "brain_t1w_real.nii.gz",
+            sample_root / "real_ct_dicom_series",
+        ]
+        loaded: list[MedicalVolume] = []
+        for path in real_candidates:
+            if path.exists():
+                try:
+                    loaded.append(load_medical_path(path))
+                except Exception as exc:
+                    print(f"[MIAV] Failed to load sample {path.name}: {exc}")
+        if loaded:
+            return loaded
+        return [
+            create_synthetic_fastmri_study(),
+            create_synthetic_t1_mri_study(),
+            create_synthetic_head_ct_study(),
+            create_synthetic_mammography_study(),
+        ]
 
     def _build_ui(self) -> None:
         central = QWidget(self)

@@ -23,9 +23,10 @@ def plot_edge_boundary_map(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.04, right=0.96, top=0.84, bottom=0.08, wspace=0.15)
     ax_edge, ax_log = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    img = ctx.image_2d.astype(np.float32)
+    step = max(1, max(ctx.image_2d.shape[:2]) // 450)
+    img = ctx.image_2d[::step, ::step].astype(np.float32)
     vmin, vmax = float(np.min(img)), float(np.max(img))
-    norm = (img - vmin) / max(1e-5, vmax - vmin)
+    norm = (img - vmin) / max(1e-12, vmax - vmin)
 
     edges_fine = canny(norm, sigma=1.0)
     edges_coarse = canny(norm, sigma=2.4)

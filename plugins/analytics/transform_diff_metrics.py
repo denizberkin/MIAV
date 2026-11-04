@@ -23,8 +23,10 @@ def plot_transform_diff(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.06, right=0.96, top=0.84, bottom=0.18, wspace=0.25)
     ax_diff, ax_grad = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    raw = ctx.raw_image_2d.astype(np.float32)
-    cur = ctx.image_2d.astype(np.float32)
+    step_r = max(1, max(ctx.raw_image_2d.shape[:2]) // 450)
+    step_c = max(1, max(ctx.image_2d.shape[:2]) // 450)
+    raw = ctx.raw_image_2d[::step_r, ::step_r].astype(np.float32)
+    cur = ctx.image_2d[::step_c, ::step_c].astype(np.float32)
     raw_for_diff = (
         cv2.resize(raw, (cur.shape[1], cur.shape[0]), interpolation=cv2.INTER_LINEAR)
         if raw.shape != cur.shape
@@ -33,10 +35,10 @@ def plot_transform_diff(ctx: AnalysisContext, fig) -> None:
     diff = np.abs(cur - raw_for_diff)
     mae = float(np.mean(diff))
     mse = float(np.mean((cur - raw_for_diff) ** 2))
-    dyn = float(max(1.0, np.max(raw) - np.min(raw)))
-    psnr = 20.0 * np.log10(dyn / np.sqrt(mse)) if mse > 1e-6 else 99.9
+    dyn = float(max(1e-12, np.max(raw) - np.min(raw)))
+    psnr = 20.0 * np.log10(dyn / np.sqrt(mse)) if mse > 1e-18 else 99.9
 
-    if mae < 1e-3:
+    if mae < dyn * 1e-4:
         grad = ndi.gaussian_gradient_magnitude(cur, sigma=1.0)
         ax_diff.imshow(grad, cmap="magma", aspect="auto")
         ax_diff.set_title("Gradient (No Transform)", color="#e4e4e7", fontsize=8)

@@ -18,8 +18,12 @@ import nibabel as nib
 import numpy as np
 import polars as pl
 import pydicom
+import pydicom.config
 
 from miav.core.data_models import MedicalVolume
+
+# Silence pydicom UID validation warnings on anonymized clinical datasets (e.g., VinDr-Mammo MD5 UIDs)
+pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
 
 
 def _build_meta_df(rows: list[dict[str, str]]) -> pl.DataFrame:
@@ -242,17 +246,26 @@ def load_fastmri_h5(path: Path) -> MedicalVolume:
     )
 
 
-def _extract_csv_rows_for_file(df: pl.DataFrame, filename: str, csv_name: str) -> list[dict[str, str]]:
-    """Extract matching metadata rows from a FastMRI/clinical CSV table using Polars."""
+def _extract_csv_rows_for_file(
+    df: pl.DataFrame,
+    filename: str,
+    csv_name: str,
+    extra_keys: Optional[list[str]] = None,
+) -> list[dict[str, str]]:
+    """Extract matching metadata rows from a FastMRI/VinDr/clinical CSV table using Polars."""
     rows: list[dict[str, str]] = []
     stem = Path(filename).stem.replace(".nii", "")
-    matched = df
-    for col in df.columns:
-        if df[col].dtype == pl.Utf8:
-            sub = df.filter(pl.col(col).str.contains(stem, literal=True))
-            if sub.height > 0:
-                matched = sub
-                break
+    search_tokens = [t for t in ([ *(extra_keys or []), stem ]) if t]
+    matched = pl.DataFrame()
+    for token in search_tokens:
+        for col in df.columns:
+            if df[col].dtype == pl.Utf8:
+                sub = df.filter(pl.col(col).str.contains(token, literal=True))
+                if sub.height > 0:
+                    matched = sub
+                    break
+        if matched.height > 0:
+            break
     target = matched.head(1) if matched.height > 0 else df.head(1)
     if target.height > 0:
         row_dict = target.to_dicts()[0]
@@ -269,33 +282,34 @@ def _extract_csv_rows_for_file(df: pl.DataFrame, filename: str, csv_name: str) -
     return rows
 
 
+def _parse_dicom_float(val: object) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        if isinstance(val, (list, tuple)) or hasattr(val, "__iter__") and not isinstance(val, (str, bytes)):
+            first = list(val)[0]
+            return float(first)
+        return float(val)
+    except Exception:
+        return None
+
+
 def load_dicom_path(path: Path) -> MedicalVolume:
     """
-    Load either a single DICOM file or an entire directory of DICOM slices
-    representing a 3D MRI or CT series.
+    Load either a single 2D DICOM file (e.g., VinDr-Mammo / X-Ray / single slice)
+    or an entire directory of DICOM slices representing a 3D MRI or CT series.
     """
     if path.is_dir():
         dcm_files = sorted(
-            [p for p in path.iterdir() if p.is_file() and (p.suffix.lower() in (".dcm", ".ima", "") and not p.name.startswith("."))]
+            [p for p in path.iterdir() if p.is_file() and (p.suffix.lower() in (".dcm", ".dicom", ".ima", "") and not p.name.startswith("."))]
         )
-        target_series_uid = None
     else:
-        # Check if sibling .dcm files belong to the exact same 3D SeriesInstanceUID
-        try:
-            primary_ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
-            target_series_uid = getattr(primary_ds, "SeriesInstanceUID", None)
-        except Exception:
-            target_series_uid = None
-        siblings = sorted([p for p in path.parent.glob("*.dcm") if p.is_file()])
-        dcm_files = siblings if (len(siblings) > 1 and target_series_uid is not None) else [path]
+        dcm_files = [path]
 
     datasets = []
     for f in dcm_files:
         try:
             ds = pydicom.dcmread(str(f), force=True)
-            if not path.is_dir() and target_series_uid is not None:
-                if getattr(ds, "SeriesInstanceUID", None) != target_series_uid:
-                    continue
             if hasattr(ds, "pixel_array"):
                 datasets.append((f, ds))
         except Exception:
@@ -320,6 +334,8 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     slices = []
     for _, ds in datasets:
         arr = ds.pixel_array.astype(np.float32)
+        if str(getattr(ds, "PhotometricInterpretation", "")).upper() == "MONOCHROME1":
+            arr = float(np.max(arr)) - arr
         slope = float(getattr(ds, "RescaleSlope", 1.0))
         intercept = float(getattr(ds, "RescaleIntercept", 0.0))
         arr = arr * slope + intercept
@@ -328,7 +344,7 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     vol = np.stack(slices, axis=0) if len(slices) > 1 else slices[0][np.newaxis, :, :]
     first_ds = datasets[0][1]
 
-    # Spacing
+    # Spacing (support both PixelSpacing and Mammography ImagerPixelSpacing)
     dz = float(getattr(first_ds, "SliceThickness", 1.0) or 1.0)
     if len(datasets) > 1:
         z0 = sort_key(datasets[0])
@@ -339,6 +355,9 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     if hasattr(first_ds, "PixelSpacing") and len(first_ds.PixelSpacing) >= 2:
         dy = float(first_ds.PixelSpacing[0])
         dx = float(first_ds.PixelSpacing[1])
+    elif hasattr(first_ds, "ImagerPixelSpacing") and len(first_ds.ImagerPixelSpacing) >= 2:
+        dy = float(first_ds.ImagerPixelSpacing[0])
+        dx = float(first_ds.ImagerPixelSpacing[1])
 
     modality = str(getattr(first_ds, "Modality", "MRI")).upper()
     if "CT" in modality:
@@ -350,6 +369,10 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     else:
         modality_norm = "MRI"
 
+    wc = _parse_dicom_float(getattr(first_ds, "WindowCenter", None))
+    ww = _parse_dicom_float(getattr(first_ds, "WindowWidth", None))
+    default_window = (ww, wc) if (ww is not None and wc is not None and ww > 0) else None
+
     # Extract rich DICOM tag metadata into Polars
     rows: list[dict[str, str]] = []
     dicom_tags = [
@@ -358,12 +381,14 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         ("PatientAge", "Patient Age"),
         ("Modality", "Modality"),
         ("Manufacturer", "Manufacturer"),
+        ("ManufacturerModelName", "Scanner Model"),
         ("InstitutionName", "Institution"),
         ("StudyDescription", "Study Description"),
         ("SeriesDescription", "Series Description"),
         ("BodyPartExamined", "Body Part Examined"),
         ("ViewPosition", "View Position"),
         ("ImageLaterality", "Image Laterality"),
+        ("PresentationIntentType", "Presentation Intent"),
         ("CompressionForce", "Compression Force (N)"),
         ("BodyPartThickness", "Compressed Thickness (mm)"),
         ("AnodeTargetMaterial", "Anode Target Material"),
@@ -377,6 +402,7 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         ("KVP", "Tube Voltage (kVp)"),
         ("SliceThickness", "Slice Thickness (mm)"),
         ("PixelSpacing", "Pixel Spacing (mm)"),
+        ("ImagerPixelSpacing", "Imager Pixel Spacing (mm)"),
         ("WindowCenter", "Default Window Center"),
         ("WindowWidth", "Default Window Width"),
     ]
@@ -395,6 +421,26 @@ def load_dicom_path(path: Path) -> MedicalVolume:
                 }
             )
 
+    # Automatically join companion CSV annotations (e.g., vindr_mammo_annotations.csv) if present
+    search_dir = path if path.is_dir() else path.parent
+    csv_candidates = list(search_dir.glob("*.csv"))
+    ext_csv_df: Optional[pl.DataFrame] = None
+    extra_keys = [
+        str(getattr(first_ds, "SOPInstanceUID", "")),
+        str(getattr(first_ds, "StudyInstanceUID", "")),
+        str(getattr(first_ds, "SeriesInstanceUID", "")),
+    ]
+    for csv_file in csv_candidates:
+        try:
+            df_cand = pl.read_csv(str(csv_file))
+            matched_rows = _extract_csv_rows_for_file(df_cand, path.name, csv_file.name, extra_keys=extra_keys)
+            if matched_rows and matched_rows[0]["notes"] == "Matched cohort record":
+                ext_csv_df = df_cand
+                rows.extend(matched_rows)
+                break
+        except Exception:
+            continue
+
     display_name = path.name if path.is_dir() else (f"{path.parent.name} ({len(slices)} DICOMs)" if len(slices) > 1 else path.name)
     return MedicalVolume(
         name=display_name,
@@ -403,6 +449,8 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         modality=modality_norm,
         filepath=str(path),
         metadata_df=_build_meta_df(rows),
+        external_csv_df=ext_csv_df,
+        default_window=default_window,
     )
 
 
@@ -460,7 +508,7 @@ def load_medical_path(path: str | Path) -> MedicalVolume:
         return load_nifti(p)
     if name_lower.endswith(".h5") or name_lower.endswith(".hdf5"):
         return load_fastmri_h5(p)
-    if name_lower.endswith(".dcm") or name_lower.endswith(".ima"):
+    if name_lower.endswith((".dcm", ".dicom", ".ima")):
         return load_dicom_path(p)
     return load_generic_image_or_array(p)
 

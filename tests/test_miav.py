@@ -32,31 +32,31 @@ from miav.ui.main_window import MiavMainWindow
 def test_end_to_end() -> None:
     app = QApplication.instance() or QApplication([])
 
-    # 1. Generate sample NIfTI, FastMRI HDF5 + CSV, 3D DICOM Series, and 2D Mammography DICOM
+    # 1. Verify Real Sample Datasets (FastMRI Knee .h5, VinDr-Mammo .dcm + .csv, Real Brain T1w NIfTI, Real CT DICOM Series)
     sample_dir = generate_all_samples("sample_data")
-    nifti_path = sample_dir / "brain_t1w_mprage.nii.gz"
-    h5_path = sample_dir / "fastmri_brain_flair.h5"
-    csv_path = sample_dir / "fastmri_brain_metadata.csv"
-    dcm_dir = sample_dir / "head_ct_dicom_series"
-    mammo_path = sample_dir / "mammography_mlo_2d.dcm"
+    nifti_path = sample_dir / "brain_t1w_real.nii.gz"
+    h5_path = sample_dir / "fastmri_knee_singlecoil.h5"
+    csv_path = sample_dir / "vindr_mammo_annotations.csv"
+    dcm_dir = sample_dir / "real_ct_dicom_series"
+    mammo_path = sample_dir / "vindr_mammo_r_cc.dcm"
 
     assert nifti_path.exists()
     assert h5_path.exists()
     assert csv_path.exists()
-    assert dcm_dir.exists() and len(list(dcm_dir.glob("*.dcm"))) == 24
+    assert dcm_dir.exists() and len(list(dcm_dir.glob("*.dcm"))) >= 20
     assert mammo_path.exists()
 
-    # 2. Test NIfTI, FastMRI HDF5, 3D DICOM Series, and 2D Mammography DICOM Loaders
+    # 2. Test NIfTI, FastMRI HDF5, 3D DICOM Series, and 2D VinDr-Mammo DICOM Loaders
     vol_nii = load_medical_path(nifti_path)
-    assert vol_nii.is_3d and vol_nii.shape == (64, 128, 128)
+    assert vol_nii.is_3d and vol_nii.shape == (190, 256, 188)
     vol_h5 = load_medical_path(h5_path)
-    assert vol_h5.is_3d and vol_h5.modality == "FASTMRI"
-    df_csv = attach_external_csv(vol_h5, csv_path)
-    assert df_csv.height == 2
+    assert vol_h5.is_3d and vol_h5.modality == "FASTMRI" and vol_h5.shape == (30, 320, 320)
     vol_dcm = load_medical_path(dcm_dir)
     assert vol_dcm.is_3d and vol_dcm.modality == "CT"
     vol_mg = load_medical_path(mammo_path)
-    assert not vol_mg.is_3d and vol_mg.modality == "MG" and vol_mg.shape == (1, 512, 384)
+    assert not vol_mg.is_3d and vol_mg.modality == "MG" and vol_mg.shape == (1, 3518, 2800)
+    df_csv = attach_external_csv(vol_mg, csv_path)
+    assert df_csv.height >= 1
 
     # 3. Test Plugin Discovery & All Analytics/Transform Plugins
     plugins_root = Path(__file__).resolve().parent.parent / "plugins"

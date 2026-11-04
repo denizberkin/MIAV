@@ -21,12 +21,21 @@ def plot_kspace_spectrum(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.06, right=0.96, top=0.84, bottom=0.18, wspace=0.26)
     ax_img, ax_rad = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    img = ctx.image_2d.astype(np.float32)
-    f_complex = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(img), norm="ortho"))
+    step = max(1, max(ctx.image_2d.shape[:2]) // 450)
+    img = ctx.image_2d[::step, ::step].astype(np.float32)
+    vmax = float(np.max(np.abs(img)))
+    img_scaled = img / max(1e-12, vmax) * 1000.0
+    f_complex = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(img_scaled), norm="ortho"))
     log_mag = np.log1p(np.abs(f_complex))
 
-    ax_img.imshow(log_mag, cmap="inferno", aspect="auto")
-    ax_img.set_title(f"Log |K-Space| (#{ctx.slice_idx + 1})", color="#e4e4e7", fontsize=8.5)
+    # Show raw acquired FastMRI complex k-space in the image pane if present and untransformed
+    if ctx.kspace_2d is not None and img.shape == ctx.raw_image_2d[::step, ::step].shape and np.allclose(img, ctx.raw_image_2d[::step, ::step], atol=1e-7):
+        ks_disp = np.log1p(np.abs(ctx.kspace_2d) / max(1e-12, float(np.max(np.abs(ctx.kspace_2d)))) * 1000.0)
+        ax_img.imshow(ks_disp, cmap="inferno", aspect="auto")
+        ax_img.set_title(f"Raw FastMRI |K-Space| (#{ctx.slice_idx + 1})", color="#e4e4e7", fontsize=8.5)
+    else:
+        ax_img.imshow(log_mag, cmap="inferno", aspect="auto")
+        ax_img.set_title(f"Log |K-Space| (#{ctx.slice_idx + 1})", color="#e4e4e7", fontsize=8.5)
     ax_img.axis("off")
 
     h, w = log_mag.shape
@@ -42,12 +51,14 @@ def plot_kspace_spectrum(ctx: AnalysisContext, fig) -> None:
     freqs = np.linspace(0.0, 0.5, len(radial_prof))
     ax_rad.plot(freqs, radial_prof, color="#a78bfa", linewidth=1.8, label="Slice")
 
-    if img.shape != ctx.raw_image_2d.shape or not np.allclose(img, ctx.raw_image_2d, atol=1e-2):
-        rh, rw = ctx.raw_image_2d.shape
+    raw_sub = ctx.raw_image_2d[::step, ::step].astype(np.float32)
+    if img.shape != raw_sub.shape or not np.allclose(img, raw_sub, atol=1e-7):
+        rh, rw = raw_sub.shape
         rcy, rcx = rh // 2, rw // 2
         ryy, rxx = np.ogrid[:rh, :rw]
         rr_clipped = np.clip(np.hypot(ryy - rcy, rxx - rcx).astype(np.int32), 0, min(rcy, rcx))
-        f_raw = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(ctx.raw_image_2d), norm="ortho"))
+        raw_scaled = raw_sub / max(1e-12, float(np.max(np.abs(raw_sub)))) * 1000.0
+        f_raw = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(raw_scaled), norm="ortho"))
         log_raw = np.log1p(np.abs(f_raw))
         raw_sum = np.bincount(rr_clipped.ravel(), weights=log_raw.ravel())
         raw_cnt = np.maximum(1, np.bincount(rr_clipped.ravel()))

@@ -137,12 +137,12 @@ def normalize_to_uint8(img: np.ndarray) -> tuple[np.ndarray, float, float]:
     """
     vmin = float(np.min(img))
     vmax = float(np.max(img))
-    span = max(1e-5, vmax - vmin)
+    span = max(1e-12, vmax - vmin)
     norm = np.clip((img - vmin) / span * 255.0, 0.0, 255.0).astype(np.uint8)
     return (norm, vmin, vmax)
 
 
 def restore_from_uint8(u8: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     """Restore a [0, 255] uint8 or float array back to `[vmin, vmax]` float32 range."""
-    span = max(1e-5, vmax - vmin)
+    span = max(1e-12, vmax - vmin)
     return (u8.astype(np.float32) / 255.0) * span + vmin

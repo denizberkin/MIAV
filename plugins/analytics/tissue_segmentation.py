@@ -23,15 +23,18 @@ def plot_tissue_segmentation(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.05, right=0.96, top=0.84, bottom=0.18, wspace=0.35)
     ax_map, ax_bar = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    img = ctx.image_2d.astype(np.float32)
-    bg_thresh = float(np.percentile(img, 12.0))
+    step = max(1, max(ctx.image_2d.shape[:2]) // 450)
+    img = ctx.image_2d[::step, ::step].astype(np.float32)
+    vmin = float(np.min(img))
+    non_min = img[img > vmin + 1e-12]
+    bg_thresh = float(np.percentile(non_min, 8.0)) if non_min.size > 64 else vmin
     fg_mask = img > bg_thresh
     fg_vals = img[fg_mask]
 
     seg_labels = np.zeros_like(img, dtype=np.int32)
     fractions = [0.0, 0.0, 0.0]
 
-    if fg_vals.size > 64 and float(np.std(fg_vals)) > 1e-3:
+    if fg_vals.size > 64 and float(np.std(fg_vals)) > 1e-12:
         try:
             if fg_vals.size <= 4000:
                 km = KMeans(n_clusters=3, n_init=2, random_state=0)

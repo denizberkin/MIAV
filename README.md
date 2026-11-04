@@ -1,6 +1,14 @@
-# MIAV — Medical Imaging, Analysis & Visualization
+<div align="center">
 
-**Medical image viewer with real time analytics, transforms from python and a 3d volume renderer.**
+<img src="assets/miav-logo.png" alt="MIAV Logo" width="180">
+
+# MIAV
+
+**Medical Imaging, Analysis & Visualization**
+
+</div>
+
+**Medical image visualization with real time analytics, transforms from python and a 3d volume renderer.**
 
 Works with:
 - nifti
@@ -50,20 +58,21 @@ pip install -r requirements.txt
 ```
 *(Supports `PySide6`, `PyQt6`, or `PyQt5` automatically via [`miav/ui/qt_compat.py`](miav/ui/qt_compat.py)).*
 
-### 2. Generate Sample 3D Datasets (Optional)
+### 2. Download Real Clinical Sample Datasets
 ```bash
 python generate_sample_data.py
 ```
-Creates ready-to-open 3D datasets in `./sample_data/`:
-- `sample_data/brain_t1w_mprage.nii.gz` (3D T1w Brain MRI)
-- `sample_data/fastmri_brain_flair.h5` + `sample_data/fastmri_brain_metadata.csv` (3D FastMRI FLAIR with complex k-space & lesion)
-- `sample_data/head_ct_dicom_series/` (24-slice 3D Head CT DICOM series in Hounsfield Units)
+Downloads real clinical datasets into `./sample_data/` (and loads them automatically on launch):
+- `sample_data/fastmri_knee_singlecoil.h5` (Real NYU fastMRI Single-Coil Knee MRI with complex `kspace` & `reconstruction_rss`)
+- `sample_data/vindr_mammo_r_cc.dcm` & `sample_data/vindr_mammo_r_mlo.dcm` + `sample_data/vindr_mammo_annotations.csv` (Real VinDr-Mammo Right CC & MLO Digital Mammography DICOMs with BI-RADS 4 Mass)
+- `sample_data/brain_t1w_real.nii.gz` (Real 3D Human Brain T1w MRI NIfTI)
+- `sample_data/real_ct_dicom_series/` (44-slice Real 3D Clinical CT DICOM series in Hounsfield Units)
 
 ### 3. Launch the Workstation
 ```bash
 python main.py
 # Or open a specific file / DICOM directory directly:
-python main.py sample_data/fastmri_brain_flair.h5
+python main.py sample_data/fastmri_knee_singlecoil.h5
 ```
 
 ---

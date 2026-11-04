@@ -1,205 +1,148 @@
 """
-Generates realistic sample 3D medical datasets on disk in `./sample_data/`:
-1. `brain_t1w_mprage.nii.gz` — 3D Brain T1w NIfTI volume
-2. `fastmri_brain_flair.h5` — 3D FastMRI HDF5 with complex `kspace`, `reconstruction_rss`, and `ismrmrd_header` XML
-3. `fastmri_brain_metadata.csv` — Companion FastMRI clinical/acquisition CSV table for Polars
-4. `head_ct_dicom_series/*.dcm` — Multi-slice 3D Head CT DICOM series in Hounsfield Units (HU)
+Downloads and prepares real clinical medical imaging datasets in `./sample_data/`:
+1. `fastmri_knee_singlecoil.h5` — Real NYU fastMRI Single-Coil Knee MRI (.h5 with complex `kspace`, `reconstruction_rss`, `reconstruction_esc`, and `ismrmrd_header` XML)
+2. `vindr_mammo_r_cc.dcm` & `vindr_mammo_r_mlo.dcm` — Real VinDr-Mammo Full-Field Digital Mammography (FFDM) DICOMs (Right CC & Right MLO views with BI-RADS 4 Mass)
+3. `vindr_mammo_annotations.csv` — Real VinDr-Mammo clinical finding annotations CSV (BI-RADS, breast density, finding category, bounding box)
+4. `brain_t1w_real.nii.gz` — Real 3D Human Brain T1w MRI NIfTI volume (188 × 256 × 190 at 0.88 mm isotropic)
+5. `real_ct_dicom_series/*.dcm` — Real 3D Clinical CT DICOM series (44 slices, 512 × 512 in Hounsfield Units)
 """
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
+import shutil
+import urllib.request
+import zipfile
 
-import h5py
-import nibabel as nib
-import numpy as np
 import polars as pl
-import pydicom
-from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-from miav.core.synthetic import generate_brain_3d_array, generate_mammogram_2d_array
+FASTMRI_KNEE_H5_URL = (
+    "https://huggingface.co/datasets/ttaylor99/fastmri-sample/resolve/main/singlecoil_val/file1000026.h5"
+)
+VINDR_MAMMO_ZIP_URL = (
+    "https://huggingface.co/datasets/hassanzo/VinDr-Mammo/resolve/main/"
+    "vindr-mammo-a-large-scale-benchmark-dataset-for-computer-aided-detection-and-diagnosis-in-full-field-digital-mammography-1.0.0.zip"
+)
+BRAIN_T1W_NIFTI_URL = "https://raw.githubusercontent.com/niivue/niivue-demo-images/main/chris_t1.nii.gz"
+REAL_CT_DICOM_ZIP_URL = "https://huggingface.co/datasets/ndonyapour/dicom-sample-files/resolve/main/ct_dicom.zip"
+
+
+class _HttpRangeFile(io.RawIOBase):
+    """Seekable HTTP Range reader to extract individual files from remote ZIP archives without downloading the full archive."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            content_range = resp.headers.get("Content-Range", "")
+            self.size = int(content_range.split("/")[-1])
+        self.pos = 0
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_SET:
+            self.pos = offset
+        elif whence == io.SEEK_CUR:
+            self.pos += offset
+        elif whence == io.SEEK_END:
+            self.pos = self.size + offset
+        return self.pos
+
+    def tell(self) -> int:
+        return self.pos
+
+    def readinto(self, b: bytearray | memoryview) -> int:
+        if self.pos >= self.size:
+            return 0
+        end = min(self.size - 1, self.pos + len(b) - 1)
+        req = urllib.request.Request(self.url, headers={"Range": f"bytes={self.pos}-{end}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+        n = len(data)
+        b[:n] = data
+        self.pos += n
+        return n
 
 
 def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
     root = Path(output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    # 1. NIfTI 3D Brain T1w Volume (.nii.gz)
-    nifti_path = root / "brain_t1w_mprage.nii.gz"
+    # Remove legacy synthetic sample files if present
+    for legacy_name in (
+        "brain_t1w_mprage.nii.gz",
+        "fastmri_brain_flair.h5",
+        "fastmri_brain_metadata.csv",
+        "mammography_mlo_2d.dcm",
+    ):
+        legacy_file = root / legacy_name
+        if legacy_file.exists():
+            legacy_file.unlink()
+    legacy_ct_dir = root / "head_ct_dicom_series"
+    if legacy_ct_dir.exists():
+        shutil.rmtree(legacy_ct_dir, ignore_errors=True)
+
+    # 1. Real FastMRI Single-Coil Knee HDF5 (.h5)
+    fastmri_path = root / "fastmri_knee_singlecoil.h5"
+    if not fastmri_path.exists():
+        print(f"[sample_data] Downloading real FastMRI single-coil knee HDF5 -> {fastmri_path.name} ...")
+        urllib.request.urlretrieve(FASTMRI_KNEE_H5_URL, str(fastmri_path))
+
+    # 2. Real VinDr-Mammo Digital Mammography DICOMs (.dcm) + Clinical Annotations CSV (.csv)
+    cc_path = root / "vindr_mammo_r_cc.dcm"
+    mlo_path = root / "vindr_mammo_r_mlo.dcm"
+    csv_path = root / "vindr_mammo_annotations.csv"
+    if not (cc_path.exists() and mlo_path.exists() and csv_path.exists()):
+        print("[sample_data] Extracting real VinDr-Mammo BI-RADS 4 Mass DICOMs & CSV via HTTP Range ...")
+        buffered = io.BufferedReader(_HttpRangeFile(VINDR_MAMMO_ZIP_URL), buffer_size=262144)
+        with zipfile.ZipFile(buffered) as zf:
+            prefix = (
+                "vindr-mammo-a-large-scale-benchmark-dataset-for-computer-aided-detection-"
+                "and-diagnosis-in-full-field-digital-mammography-1.0.0"
+            )
+            csv_bytes = zf.read(f"{prefix}/finding_annotations.csv")
+            df = pl.read_csv(io.BytesIO(csv_bytes))
+            study_id = "48575a27b7c992427041a82fa750d3fa"
+            study_rows = df.filter(pl.col("study_id") == study_id)
+            study_rows.write_csv(str(csv_path))
+            for row in study_rows.iter_rows(named=True):
+                lat = str(row["laterality"]).lower()
+                view = str(row["view_position"]).lower()
+                img_id = str(row["image_id"])
+                if lat == "r":
+                    target_dcm = root / f"vindr_mammo_{lat}_{view}.dcm"
+                    if not target_dcm.exists():
+                        raw_dcm = zf.read(f"{prefix}/images/{study_id}/{img_id}.dicom")
+                        target_dcm.write_bytes(raw_dcm)
+
+    # 3. Real 3D Human Brain T1w MRI NIfTI (.nii.gz)
+    nifti_path = root / "brain_t1w_real.nii.gz"
     if not nifti_path.exists():
-        vol_t1 = generate_brain_3d_array(shape=(64, 128, 128), modality="T1", include_lesion=False)
-        # Transpose from (Z, Y, X) back to RAS (X, Y, Z) for standard NIfTI storage
-        ras_data = np.transpose(vol_t1[:, ::-1, :], (2, 1, 0))
-        affine = np.diag([1.0, 1.0, 1.2, 1.0]).astype(np.float32)
-        nii_img = nib.Nifti1Image(ras_data, affine)
-        nii_img.header["descrip"] = b"3D_T1w_MPRAGE_Brain_Sample"
-        nib.save(nii_img, str(nifti_path))
+        print(f"[sample_data] Downloading real 3D Brain T1w MRI NIfTI -> {nifti_path.name} ...")
+        urllib.request.urlretrieve(BRAIN_T1W_NIFTI_URL, str(nifti_path))
 
-    # 2. FastMRI 3D Brain FLAIR HDF5 (.h5) + Companion CSV (.csv)
-    h5_path = root / "fastmri_brain_flair.h5"
-    csv_path = root / "fastmri_brain_metadata.csv"
-    if not h5_path.exists():
-        vol_flair = generate_brain_3d_array(shape=(32, 128, 128), modality="FLAIR", include_lesion=True)
-        kspace = np.fft.fftshift(
-            np.fft.fft2(np.fft.ifftshift(vol_flair, axes=(-2, -1)), axes=(-2, -1), norm="ortho"),
-            axes=(-2, -1),
-        ).astype(np.complex64)
-
-        xml_header = """<?xml version="1.0" encoding="utf-8"?>
-        <ismrmrdHeader>
-          <acquisitionSystemInformation>
-            <systemVendor>SIEMENS</systemVendor>
-            <systemModel>MAGNETOM Prisma</systemModel>
-            <systemFieldStrength_T>3.0</systemFieldStrength_T>
-            <receiverChannels>20</receiverChannels>
-          </acquisitionSystemInformation>
-          <sequenceParameters>
-            <TR>9000.0</TR>
-            <TE>86.0</TE>
-            <TI>2500.0</TI>
-            <flipAngle_deg>150.0</flipAngle_deg>
-            <sequence_type>AXFLAIR</sequence_type>
-          </sequenceParameters>
-        </ismrmrdHeader>
-        """
-        with h5py.File(str(h5_path), "w") as hf:
-            hf.attrs["acquisition"] = "AXFLAIR"
-            hf.attrs["patient_id"] = "fastmri_brain_flair"
-            hf.attrs["max"] = float(np.max(vol_flair))
-            hf.attrs["norm"] = float(np.linalg.norm(vol_flair))
-            hf.create_dataset("ismrmrd_header", data=np.bytes_(xml_header))
-            hf.create_dataset("reconstruction_rss", data=vol_flair, compression="gzip")
-            hf.create_dataset("kspace", data=kspace, compression="gzip")
-
-    if not csv_path.exists():
-        cohort_df = pl.DataFrame(
-            [
-                {
-                    "file_id": "fastmri_brain_flair.h5",
-                    "sequence": "AXFLAIR_3D",
-                    "scanner_field_T": 3.0,
-                    "acceleration_R": 4,
-                    "pathology": "Right Parietal Hyperintense WM Lesion",
-                    "snr_db": 26.4,
-                },
-                {
-                    "file_id": "brain_t1w_mprage.nii.gz",
-                    "sequence": "MPRAGE_T1w",
-                    "scanner_field_T": 3.0,
-                    "acceleration_R": 2,
-                    "pathology": "Normal Structural Anatomy",
-                    "snr_db": 31.2,
-                },
-            ]
-        )
-        cohort_df.write_csv(str(csv_path))
-
-    # 3. 3D Head CT DICOM Series Directory
-    dcm_dir = root / "head_ct_dicom_series"
-    if not dcm_dir.exists() or not list(dcm_dir.glob("*.dcm")):
-        dcm_dir.mkdir(parents=True, exist_ok=True)
-        vol_ct = generate_brain_3d_array(shape=(24, 128, 128), modality="CT", include_lesion=True)
-        study_uid = generate_uid()
-        series_uid = generate_uid()
-
-        for z_idx in range(vol_ct.shape[0]):
-            file_meta = FileMetaDataset()
-            file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"  # CT Image Storage
-            file_meta.MediaStorageSOPInstanceUID = generate_uid()
-            file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-
-            slice_path = dcm_dir / f"slice_{z_idx:03d}.dcm"
-            ds = FileDataset(str(slice_path), {}, file_meta=file_meta, preamble=b"\0" * 128)
-            ds.is_little_endian = True
-            ds.is_implicit_VR = False
-
-            ds.PatientName = "BrainPhantom^HeadCT"
-            ds.PatientID = "CT_HEAD_001"
-            ds.Modality = "CT"
-            ds.Manufacturer = "MIAV Synthetic CT"
-            ds.StudyDescription = "Head CT Trauma Non-Contrast"
-            ds.SeriesDescription = "Axial Head CT 2.5mm"
-            ds.StudyInstanceUID = study_uid
-            ds.SeriesInstanceUID = series_uid
-            ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
-            ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
-            ds.InstanceNumber = z_idx + 1
-            ds.SliceThickness = 2.5
-            ds.SliceLocation = float(z_idx * 2.5)
-            ds.ImagePositionPatient = [0.0, 0.0, float(z_idx * 2.5)]
-            ds.PixelSpacing = [1.0, 1.0]
-            ds.KVP = 120.0
-            ds.WindowCenter = 40.0
-            ds.WindowWidth = 80.0
-            ds.RescaleIntercept = -1024.0
-            ds.RescaleSlope = 1.0
-
-            raw_pixels = np.clip(vol_ct[z_idx] + 1024.0, 0, 4095).astype(np.uint16)
-            ds.Rows, ds.Columns = raw_pixels.shape
-            ds.SamplesPerPixel = 1
-            ds.PhotometricInterpretation = "MONOCHROME2"
-            ds.BitsAllocated = 16
-            ds.BitsStored = 16
-            ds.HighBit = 15
-            ds.PixelRepresentation = 0
-            ds.PixelData = raw_pixels.tobytes()
-            pydicom.dcmwrite(str(slice_path), ds, write_like_original=False)
-
-    # 4. 2D Digital Mammography DICOM File (.dcm)
-    mammo_path = root / "mammography_mlo_2d.dcm"
-    if not mammo_path.exists():
-        img_mg = generate_mammogram_2d_array(shape=(512, 384))
-        file_meta = FileMetaDataset()
-        file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.1.2"  # Digital Mammography X-Ray Image Storage
-        file_meta.MediaStorageSOPInstanceUID = generate_uid()
-        file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-
-        ds = FileDataset(str(mammo_path), {}, file_meta=file_meta, preamble=b"\0" * 128)
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
-
-        ds.PatientName = "BreastPhantom^MammoMLO"
-        ds.PatientID = "MG_BREAST_001"
-        ds.PatientSex = "F"
-        ds.PatientAge = "052Y"
-        ds.Modality = "MG"
-        ds.Manufacturer = "MIAV Synthetic FFDM"
-        ds.StudyDescription = "Screening Digital Mammography Bilateral"
-        ds.SeriesDescription = "R MLO Full-Field Digital Mammogram"
-        ds.BodyPartExamined = "BREAST"
-        ds.ViewPosition = "MLO"
-        ds.ImageLaterality = "R"
-        ds.CompressionForce = 115.0
-        ds.BodyPartThickness = 52.0
-        ds.AnodeTargetMaterial = "RHODIUM"
-        ds.FilterMaterial = "RHODIUM"
-        ds.StudyInstanceUID = generate_uid()
-        ds.SeriesInstanceUID = generate_uid()
-        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
-        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
-        ds.InstanceNumber = 1
-        ds.PixelSpacing = [0.07, 0.07]
-        ds.KVP = 28.0
-        ds.WindowCenter = 2000.0
-        ds.WindowWidth = 2800.0
-        ds.RescaleIntercept = 0.0
-        ds.RescaleSlope = 1.0
-
-        raw_mg = np.clip(img_mg, 0, 4095).astype(np.uint16)
-        ds.Rows, ds.Columns = raw_mg.shape
-        ds.SamplesPerPixel = 1
-        ds.PhotometricInterpretation = "MONOCHROME2"
-        ds.BitsAllocated = 16
-        ds.BitsStored = 12
-        ds.HighBit = 11
-        ds.PixelRepresentation = 0
-        ds.PixelData = raw_mg.tobytes()
-        pydicom.dcmwrite(str(mammo_path), ds, write_like_original=False)
+    # 4. Real 3D Clinical CT DICOM Series (.dcm folder)
+    ct_dir = root / "real_ct_dicom_series"
+    if not ct_dir.exists() or not list(ct_dir.glob("*.dcm")):
+        ct_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[sample_data] Downloading real 3D CT DICOM series -> {ct_dir.name}/ ...")
+        ct_zip_bytes = urllib.request.urlopen(REAL_CT_DICOM_ZIP_URL, timeout=30).read()
+        with zipfile.ZipFile(io.BytesIO(ct_zip_bytes)) as zf:
+            idx = 0
+            for name in sorted(zf.namelist()):
+                if name.endswith(".dcm") and not name.startswith("__MACOSX"):
+                    (ct_dir / f"slice_{idx:03d}.dcm").write_bytes(zf.read(name))
+                    idx += 1
 
     return root
 
 
 if __name__ == "__main__":
     out = generate_all_samples()
-    print(f"Sample datasets ready in: {out}")
+    print(f"Real clinical sample datasets ready in: {out}")
