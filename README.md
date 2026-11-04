@@ -10,7 +10,7 @@
 
 </div>
 
-**Medical image visualization with real time analytics, transforms from python and a 3d volume renderer.**
+**Medical image visualization with real time analytics, transforms from python and a 3D volume renderer.**
 
 Works with:
 - nifti
