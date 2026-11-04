@@ -92,6 +92,48 @@ class AnalysisContext:
 
     window_width: float = 255.0
     window_level: float = 128.0
+    mask_2d: Optional[np.ndarray] = None
+
+
+@dataclass
+class ViewContext:
+    """
+    Context passed to `@view_plugin` functions to render modular 2D views
+    (e.g., standalone segmentation masks, `(1 - rho) * image + rho * mask` alpha overlays,
+    bounding boxes, or custom dataset views from a user Python script).
+    The function may return either a 2D float32 array `(H, W)` or an RGB uint8 array `(H, W, 3)`.
+    """
+
+    image_2d: np.ndarray
+    raw_image_2d: np.ndarray
+    mask_2d: Optional[np.ndarray] = None
+    rho: float = 0.45
+    mask_color: str = "emerald"
+    plane: str = "axial"
+    slice_idx: int = 0
+    num_slices: int = 1
+    volume_3d: Optional[np.ndarray] = None
+    metadata: Optional[pl.DataFrame] = None
+    window_width: float = 255.0
+    window_level: float = 128.0
+
+
+@dataclass
+class ViewPluginSpec:
+    """Metadata and callable for a registered `@view_plugin`."""
+
+    plugin_id: str
+    name: str
+    category: str
+    description: str
+    func: Callable[[ViewContext], np.ndarray]
+    full_name: str = ""
+    source_path: Optional[str] = None
+
+    @property
+    def tooltip_text(self) -> str:
+        header = self.full_name or self.name
+        return f"{header}\nCategory: {self.category}\n\n{self.description}"
 
 
 @dataclass
@@ -138,6 +180,8 @@ class PluginRegistry:
     def __init__(self) -> None:
         self.analytics: dict[str, AnalyticsPluginSpec] = {}
         self.transforms: dict[str, TransformPluginSpec] = {}
+        self.views: dict[str, ViewPluginSpec] = {}
+        self.last_loaded_views: list[str] = []
         self._loaded_files: set[str] = set()
 
     def register_analytics(self, spec: AnalyticsPluginSpec) -> None:
@@ -146,18 +190,24 @@ class PluginRegistry:
     def register_transform(self, spec: TransformPluginSpec) -> None:
         self.transforms[spec.plugin_id] = spec
 
+    def register_view(self, spec: ViewPluginSpec) -> None:
+        self.views[spec.plugin_id] = spec
+
     def load_file(self, filepath: str | Path) -> tuple[list[str], list[str]]:
         """
-        Dynamically import or reload a Python file and register any `@analytics_plugin`
-        or `@transform_plugin` functions (or fallback `analyze_*` / `transform_*` functions).
-        Returns (new_analytics_ids, new_transform_ids).
+        Dynamically import or reload a Python file and register any `@analytics_plugin`,
+        `@transform_plugin`, or `@view_plugin` functions (or fallback `analyze_*` /
+        `transform_*` / `view_*` functions).
+        Returns (new_analytics_ids, new_transform_ids) and stores new view IDs in `self.last_loaded_views`.
         """
         path = Path(filepath).resolve()
+        self.last_loaded_views = []
         if not path.exists() or not path.is_file() or path.suffix != ".py":
             return ([], [])
 
         before_a = set(self.analytics.keys())
         before_t = set(self.transforms.keys())
+        before_v = set(self.views.keys())
 
         mod_name = f"miav_user_plugin_{path.stem}_{abs(hash(str(path))) % 100000}"
         spec = importlib.util.spec_from_file_location(mod_name, str(path))
@@ -174,7 +224,7 @@ class PluginRegistry:
             return ([], [])
 
         for attr_name in dir(module):
-            if attr_name in ("analytics_plugin", "transform_plugin"):
+            if attr_name in ("analytics_plugin", "transform_plugin", "view_plugin"):
                 continue
             obj = getattr(module, attr_name)
             if not callable(obj) or getattr(obj, "__module__", None) != module.__name__:
@@ -187,6 +237,10 @@ class PluginRegistry:
                 t_spec: TransformPluginSpec = getattr(obj, "_miav_transform_spec")
                 t_spec.source_path = str(path)
                 self.register_transform(t_spec)
+            elif hasattr(obj, "_miav_view_spec"):
+                v_spec: ViewPluginSpec = getattr(obj, "_miav_view_spec")
+                v_spec.source_path = str(path)
+                self.register_view(v_spec)
             elif attr_name.startswith("analyze_") and attr_name not in self.analytics:
                 doc = (obj.__doc__ or "Custom imported Python analytics function.").strip().splitlines()[0]
                 short_name = attr_name.replace("analyze_", "").replace("_", " ").title()
@@ -216,10 +270,24 @@ class PluginRegistry:
                     source_path=str(path),
                 )
                 self.register_transform(t_spec)
+            elif attr_name.startswith("view_") and attr_name not in self.views:
+                doc = (obj.__doc__ or "Custom imported Python view function.").strip().splitlines()[0]
+                short_name = attr_name.replace("view_", "").replace("_", " ").title()
+                v_spec = ViewPluginSpec(
+                    plugin_id=attr_name,
+                    name=short_name[:22],
+                    full_name=short_name,
+                    category="Custom View",
+                    description=doc,
+                    func=obj,
+                    source_path=str(path),
+                )
+                self.register_view(v_spec)
 
         self._loaded_files.add(str(path))
         new_a = [k for k in self.analytics.keys() if k not in before_a]
         new_t = [k for k in self.transforms.keys() if k not in before_t]
+        self.last_loaded_views = [k for k in self.views.keys() if k not in before_v]
         return (new_a, new_t)
 
     def discover_directory(self, directory: str | Path) -> None:
@@ -297,6 +365,37 @@ def transform_plugin(
         )
         setattr(func, "_miav_transform_spec", spec)
         REGISTRY.register_transform(spec)
+        return func
+
+    return decorator
+
+
+def view_plugin(
+    name: str,
+    category: str = "View / Overlay",
+    description: str = "",
+    plugin_id: Optional[str] = None,
+    full_name: str = "",
+) -> Callable[[Callable[[ViewContext], np.ndarray]], Callable[[ViewContext], np.ndarray]]:
+    """
+    Decorator to register a modular Python function as a selectable viewport View / Overlay
+    (e.g., standalone Segmentation Mask view, `(1 - rho) * image + rho * mask` alpha overlay,
+    bounding box overlay, or custom dataset view).
+    """
+
+    def decorator(func: Callable[[ViewContext], np.ndarray]) -> Callable[[ViewContext], np.ndarray]:
+        pid = plugin_id or func.__name__
+        desc = description or ((func.__doc__ or "").strip().splitlines()[0] if func.__doc__ else name)
+        spec = ViewPluginSpec(
+            plugin_id=pid,
+            name=name,
+            full_name=full_name or name,
+            category=category,
+            description=desc,
+            func=func,
+        )
+        setattr(func, "_miav_view_spec", spec)
+        REGISTRY.register_view(spec)
         return func
 
     return decorator

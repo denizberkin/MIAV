@@ -46,6 +46,9 @@ class MedicalVolume:
     study_mode: str = ""  # "mri_3d", "mri_2d", "single_mammo", "multi_mammo"
     mammo_views: dict[str, np.ndarray] = field(default_factory=dict)  # keys: "rmlo", "lmlo", "rcc", "lcc"
     primary_mammo_view: str = "rcc"
+    mask_volume: Optional[np.ndarray] = None  # Optional 3D/2D segmentation mask (Z, Y, X) where > 0 is foreground
+    mammo_masks: dict[str, np.ndarray] = field(default_factory=dict)  # Optional per-view 2D mammo masks
+    mask_name: str = ""
 
     def __post_init__(self) -> None:
         if self.volume.ndim == 2:
@@ -116,6 +119,82 @@ class MedicalVolume:
             return self.volume[::-1, idx, :]
         idx = int(np.clip(index, 0, z - 1))
         return self.volume[idx, :, :]
+
+    def get_mask_slice(self, plane: str = "axial", index: int = 0) -> np.ndarray:
+        """
+        Return a 2D binary segmentation mask `(H, W)` in float32 (`0.0` or `1.0`)
+        for the requested plane and slice index. Uses `mammo_masks` or `mask_volume`
+        if loaded, or falls back to clinical annotation / tissue auto-segmentation.
+        """
+        plane_low = plane.lower()
+        raw_2d = self.get_slice(plane_low, index)
+        h, w = raw_2d.shape[:2]
+
+        # 1. Explicit per-view mammography mask
+        if plane_low in ("rcc", "lcc", "rmlo", "lmlo") and plane_low in self.mammo_masks:
+            m = self.mammo_masks[plane_low]
+            return (m > 0).astype(np.float32)
+
+        # 2. Explicit 3D/2D mask volume
+        if self.mask_volume is not None and self.mask_volume.ndim == 3:
+            mz, my, mx = self.mask_volume.shape
+            if plane_low in ("rcc", "lcc", "rmlo", "lmlo", "single"):
+                m_slice = self.mask_volume[0, :, :]
+            elif plane_low == "sagittal":
+                idx_m = int(np.clip(index, 0, mx - 1))
+                m_slice = self.mask_volume[::-1, :, idx_m]
+            elif plane_low == "coronal":
+                idx_m = int(np.clip(index, 0, my - 1))
+                m_slice = self.mask_volume[::-1, idx_m, :]
+            else:
+                idx_m = int(np.clip(index, 0, mz - 1))
+                m_slice = self.mask_volume[idx_m, :, :]
+            return (m_slice > 0).astype(np.float32)
+
+        # 3. Clinical CSV Bounding-Box / Lesion Mask for Mammography (e.g., VinDr-Mammo BI-RADS 4 Mass)
+        if self.is_mammography and self.external_csv_df is not None and self.external_csv_df.height > 0:
+            cols = set(self.external_csv_df.columns)
+            if {"laterality", "view_position", "xmin", "ymin", "xmax", "ymax"}.issubset(cols):
+                lat_target = "R" if plane_low.startswith("r") else "L"
+                vp_target = "MLO" if "mlo" in plane_low else "CC"
+                for row in self.external_csv_df.iter_rows(named=True):
+                    if (
+                        str(row.get("laterality", "")).upper() == lat_target
+                        and str(row.get("view_position", "")).upper() == vp_target
+                        and row.get("xmin") is not None
+                        and row.get("xmax") is not None
+                    ):
+                        try:
+                            x0 = int(np.clip(float(row["xmin"]), 0, w - 1))
+                            y0 = int(np.clip(float(row["ymin"]), 0, h - 1))
+                            x1 = int(np.clip(float(row["xmax"]), 0, w - 1))
+                            y1 = int(np.clip(float(row["ymax"]), 0, h - 1))
+                            if x1 > x0 + 4 and y1 > y0 + 4:
+                                mask_2d = np.zeros((h, w), dtype=np.float32)
+                                roi = raw_2d[y0:y1, x0:x1]
+                                thresh = float(np.percentile(roi, 45.0))
+                                yy, xx = np.ogrid[y0:y1, x0:x1]
+                                cy_m = 0.5 * (y0 + y1)
+                                cx_m = 0.5 * (x0 + x1)
+                                ry_m = max(1.0, 0.5 * (y1 - y0))
+                                rx_m = max(1.0, 0.5 * (x1 - x0))
+                                ell = ((yy - cy_m) / ry_m) ** 2 + ((xx - cx_m) / rx_m) ** 2 <= 1.0
+                                mask_2d[y0:y1, x0:x1] = np.where(ell & (roi >= thresh), 1.0, 0.0)
+                                return mask_2d
+                        except Exception:
+                            pass
+
+        # 4. Automatic anatomical foreground structure segmentation fallback
+        vmin = float(np.min(raw_2d))
+        vmax = float(np.max(raw_2d))
+        if vmax - vmin <= 1e-12:
+            return np.zeros((h, w), dtype=np.float32)
+        fg = raw_2d[raw_2d > vmin + (vmax - vmin) * 0.08]
+        if fg.size > 32:
+            t_low, t_high = np.percentile(fg, [68.0, 99.8])
+        else:
+            t_low, t_high = np.percentile(raw_2d, [75.0, 99.8])
+        return ((raw_2d >= t_low) & (raw_2d <= t_high)).astype(np.float32)
 
     def get_kspace_slice(self, plane: str = "axial", index: int = 0) -> Optional[np.ndarray]:
         """Return complex 2D k-space for the given slice if FastMRI k-space is present."""

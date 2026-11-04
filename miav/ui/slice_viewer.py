@@ -14,6 +14,7 @@ import numpy as np
 
 from miav.core.data_models import MedicalVolume
 from miav.core.transform_pipeline import TransformPipeline
+from miav.plugin_sdk import REGISTRY, ViewContext
 from miav.ui.annotation_overlay import AnnotationOverlay
 from miav.ui.qt_compat import (
     QColor,
@@ -84,6 +85,8 @@ class FastSliceCanvas(QWidget):
         self._last_mouse_pos: Optional[QPointF] = None
         self._cached_qimage: Optional[QImage] = None
         self._cached_u8_buf: Optional[np.ndarray] = None
+        self.rendered_view_rgb: Optional[np.ndarray] = None
+        self.view_label: str = ""
         self._image_dirty: bool = True
         self.annotation_overlay = AnnotationOverlay(self)
         self.annotation_overlay.overlayClicked.connect(self.canvasActivated.emit)
@@ -102,9 +105,13 @@ class FastSliceCanvas(QWidget):
         plane: str,
         slice_idx: int,
         num_slices: int,
+        rendered_rgb: Optional[np.ndarray] = None,
+        view_label: str = "",
     ) -> None:
         self.raw_slice = raw_slice
         self.display_slice = transformed_slice
+        self.rendered_view_rgb = rendered_rgb
+        self.view_label = view_label
         self.plane = plane
         self.slice_idx = slice_idx
         self.num_slices = num_slices
@@ -158,29 +165,35 @@ class FastSliceCanvas(QWidget):
         img = self.display_slice
         h, w = img.shape[:2]
         if self._image_dirty or self._cached_qimage is None:
-            vmin = self.window_level - self.window_width * 0.5
-            vmax = self.window_level + self.window_width * 0.5
-            u8 = np.clip((img - vmin) / max(1e-12, vmax - vmin) * 255.0, 0.0, 255.0).astype(np.uint8)
-
-            if self.colormap == "inferno":
-                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_INFERNO)
-                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            if self.rendered_view_rgb is not None and self.rendered_view_rgb.ndim == 3:
+                rgb = np.ascontiguousarray(self.rendered_view_rgb, dtype=np.uint8)
+                rh, rw = rgb.shape[:2]
                 self._cached_u8_buf = rgb
-                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-            elif self.colormap == "viridis":
-                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_VIRIDIS)
-                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-                self._cached_u8_buf = rgb
-                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-            elif self.colormap == "bone":
-                bgr = cv2.applyColorMap(u8, cv2.COLORMAP_BONE)
-                rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-                self._cached_u8_buf = rgb
-                self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+                self._cached_qimage = QImage(rgb.data, rw, rh, rw * 3, QImage.Format.Format_RGB888)
             else:
-                u8 = np.ascontiguousarray(u8)
-                self._cached_u8_buf = u8
-                self._cached_qimage = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+                vmin = self.window_level - self.window_width * 0.5
+                vmax = self.window_level + self.window_width * 0.5
+                u8 = np.clip((img - vmin) / max(1e-12, vmax - vmin) * 255.0, 0.0, 255.0).astype(np.uint8)
+
+                if self.colormap == "inferno":
+                    bgr = cv2.applyColorMap(u8, cv2.COLORMAP_INFERNO)
+                    rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                    self._cached_u8_buf = rgb
+                    self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+                elif self.colormap == "viridis":
+                    bgr = cv2.applyColorMap(u8, cv2.COLORMAP_VIRIDIS)
+                    rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                    self._cached_u8_buf = rgb
+                    self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+                elif self.colormap == "bone":
+                    bgr = cv2.applyColorMap(u8, cv2.COLORMAP_BONE)
+                    rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                    self._cached_u8_buf = rgb
+                    self._cached_qimage = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
+                else:
+                    u8 = np.ascontiguousarray(u8)
+                    self._cached_u8_buf = u8
+                    self._cached_qimage = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
             self._image_dirty = False
 
         target_rect = self._compute_image_rect()
@@ -210,10 +223,11 @@ class FastSliceCanvas(QWidget):
         painter.setPen(QColor("#e4e4e7"))
         painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
         plane_title = "SINGLE VIEW" if self.plane == "single" else self.plane.upper()
+        view_suffix = f" | {self.view_label}" if self.view_label else ""
         painter.drawText(
             8,
             16,
-            f"{plane_title} {self.slice_idx + 1}/{self.num_slices}",
+            f"{plane_title} {self.slice_idx + 1}/{self.num_slices}{view_suffix}",
         )
         painter.setPen(QColor("#a1a1aa"))
         painter.setFont(QFont("Consolas", 8))
@@ -320,6 +334,7 @@ class SliceViewerWidget(QFrame):
     windowLevelChanged = Signal(float, float)     # (new_width, new_level)
     roiSelectionChanged = Signal(object)          # (y0, y1, x0, x1) or None
     planeSwitched = Signal(str)                   # ('axial' | 'sagittal' | 'coronal' | 'vol3d')
+    viewPluginChanged = Signal(str)               # ('original_view' | 'segmentation_mask' | 'mask_alpha_overlay' | ...)
     expandRequested = Signal()
     viewActivated = Signal(object)                # emits `self` when clicked/interacted with
 
@@ -331,6 +346,9 @@ class SliceViewerWidget(QFrame):
         self.transform_pipeline: Optional[TransformPipeline] = None
         self.plane: str = initial_plane
         self.slice_idx: int = 0
+        self.view_plugin_id: str = "original_view"
+        self.mask_rho: float = 0.45
+        self.mask_color: str = "emerald"
         self.is_active_analytics_source: bool = False
         self._needs_refresh_on_show: bool = False
         self._is_expanded: bool = False
@@ -352,6 +370,15 @@ class SliceViewerWidget(QFrame):
             self.plane_combo.setCurrentIndex(idx)
         self.plane_combo.currentIndexChanged.connect(self._on_plane_combo_changed)
         top_bar.addWidget(self.plane_combo)
+
+        self.view_combo = QComboBox()
+        self.view_combo.setToolTip(
+            "Select modular View / Segmentation Mask mode for this viewport "
+            "(Original, Segmentation Mask, Mask Alpha Overlay, or custom @view_plugin)"
+        )
+        self.refresh_view_plugin_choices()
+        self.view_combo.currentIndexChanged.connect(self._on_view_combo_changed)
+        top_bar.addWidget(self.view_combo)
 
         self.cmap_combo = QComboBox()
         self.cmap_combo.addItem("Gray", "gray")
@@ -535,6 +562,40 @@ class SliceViewerWidget(QFrame):
         if idx >= 0:
             self.plane_combo.setCurrentIndex(idx)
 
+    def refresh_view_plugin_choices(self) -> None:
+        self.view_combo.blockSignals(True)
+        self.view_combo.clear()
+        self.view_combo.addItem("Original View", "original_view")
+        for vid, vspec in REGISTRY.views.items():
+            if vid != "original_view":
+                self.view_combo.addItem(vspec.name, vid)
+        idx = self.view_combo.findData(self.view_plugin_id)
+        if idx < 0:
+            idx = 0
+        self.view_combo.setCurrentIndex(idx)
+        self.view_plugin_id = str(self.view_combo.itemData(idx))
+        self.view_combo.blockSignals(False)
+
+    def set_view_plugin(self, plugin_id: str) -> None:
+        self.refresh_view_plugin_choices()
+        idx = self.view_combo.findData(plugin_id)
+        if idx >= 0:
+            self.view_combo.setCurrentIndex(idx)
+            self.view_plugin_id = plugin_id
+            self.refresh_slice(force=True)
+
+    def set_mask_params(self, rho: float, mask_color: str = "emerald") -> None:
+        self.mask_rho = float(np.clip(rho, 0.0, 1.0))
+        self.mask_color = mask_color
+        if self.view_plugin_id != "original_view":
+            self.refresh_slice(force=True)
+
+    def _on_view_combo_changed(self) -> None:
+        self.viewActivated.emit(self)
+        self.view_plugin_id = str(self.view_combo.currentData())
+        self.refresh_slice(force=True)
+        self.viewPluginChanged.emit(self.view_plugin_id)
+
     def _on_plane_combo_changed(self) -> None:
         self.viewActivated.emit(self)
         new_plane = str(self.plane_combo.currentData())
@@ -601,8 +662,49 @@ class SliceViewerWidget(QFrame):
         else:
             disp_2d = raw_2d
 
+        rendered_rgb: Optional[np.ndarray] = None
+        view_label = ""
+        if self.view_plugin_id != "original_view" and self.view_plugin_id in REGISTRY.views:
+            vspec = REGISTRY.views[self.view_plugin_id]
+            mask_2d = self.volume.get_mask_slice(eff_plane, self.slice_idx)
+            vctx = ViewContext(
+                image_2d=disp_2d,
+                raw_image_2d=raw_2d,
+                mask_2d=mask_2d,
+                rho=self.mask_rho,
+                mask_color=self.mask_color,
+                plane=eff_plane,
+                slice_idx=self.slice_idx,
+                num_slices=n_slices,
+                volume_3d=self.volume.volume,
+                metadata=self.volume.metadata_df,
+                window_width=self.slice_canvas.window_width,
+                window_level=self.slice_canvas.window_level,
+            )
+            try:
+                view_out = vspec.func(vctx)
+                if isinstance(view_out, np.ndarray):
+                    if view_out.ndim == 3 and view_out.shape[2] == 3:
+                        rendered_rgb = np.clip(view_out, 0, 255).astype(np.uint8)
+                    elif view_out.ndim == 2:
+                        disp_2d = view_out.astype(np.float32)
+                if self.view_plugin_id == "mask_alpha_overlay":
+                    view_label = f"{vspec.name} (ρ={self.mask_rho:.2f})"
+                else:
+                    view_label = vspec.name
+            except Exception as exc:
+                print(f"[SliceViewer] Error in view plugin '{self.view_plugin_id}': {exc}")
+
         self.slice_lbl.setText(f"{self.slice_idx + 1} / {n_slices}")
-        self.slice_canvas.set_slice_data(raw_2d, disp_2d, eff_plane, self.slice_idx, n_slices)
+        self.slice_canvas.set_slice_data(
+            raw_2d,
+            disp_2d,
+            eff_plane,
+            self.slice_idx,
+            n_slices,
+            rendered_rgb=rendered_rgb,
+            view_label=view_label,
+        )
 
         z, y, x = self.volume.shape
         if eff_plane == "axial":
@@ -622,9 +724,12 @@ class SliceViewerWidget(QFrame):
     def set_window_level(self, width: float, level: float) -> None:
         self.slice_canvas.window_width = max(1e-12, float(width))
         self.slice_canvas.window_level = float(level)
-        self.slice_canvas.invalidate_image_cache()
-        if self.isVisible():
-            self.slice_canvas.update()
+        if self.view_plugin_id != "original_view":
+            self.refresh_slice()
+        else:
+            self.slice_canvas.invalidate_image_cache()
+            if self.isVisible():
+                self.slice_canvas.update()
 
     def _on_cursor_moved(self, row_y: int, col_x: int) -> None:
         eff_plane = "axial" if self.plane == "vol3d" else self.plane

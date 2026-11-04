@@ -264,6 +264,58 @@ def test_end_to_end() -> None:
     assert [win.viewer_axial.plane_combo.itemData(i) for i in range(win.viewer_axial.plane_combo.count())] == ["single"]
     assert win.viewer_axial.isVisible() and not win.viewer_sagittal.isVisible() and not win.viewer_3d.isVisible()
 
+    # 11. Test Segmentation Masks (1. Show as another view, 2. Alpha blend (1-rho)*img + rho*mask where mask=1) & Modular @view_plugin
+    win.open_path(h5_path)
+    win._select_active_viewer(win.viewer_axial, trigger_analytics=True)
+    assert {"original_view", "segmentation_mask", "mask_alpha_overlay", "mask_contour_bbox"}.issubset(
+        set(REGISTRY.views.keys())
+    )
+
+    # (1) Show mask as another view in companion viewport
+    win.show_mask_as_another_view()
+    assert win.viewer_sagittal.isVisible()
+    assert win.viewer_sagittal.plane == win.viewer_axial.plane
+    assert win.viewer_sagittal.view_plugin_id == "segmentation_mask"
+    assert win.viewer_sagittal.slice_canvas.rendered_view_rgb is not None
+
+    # Scrolling primary viewport synchronizes the companion Segmentation Mask viewport
+    win.viewer_axial.step_slice(2, False)
+    assert win.viewer_sagittal.slice_idx == win.viewer_axial.slice_idx
+
+    # (2) Combine with alpha: (1 - rho) * original + rho * mask only where mask == 1
+    win.mask_color_combo.setCurrentIndex(win.mask_color_combo.findData("grayscale"))
+    win.set_mask_rho(0.60)
+    win.toggle_mask_alpha_overlay()
+    assert win.viewer_axial.view_plugin_id == "mask_alpha_overlay"
+    blended_2d, raw_2d = win.viewer_axial.get_active_slices()
+    mask_2d = win.active_volume.get_mask_slice(win.viewer_axial.plane, win.viewer_axial.slice_idx) > 0.5
+    # Where mask == 0, blended_2d must equal raw_2d identically
+    assert np.allclose(blended_2d[~mask_2d], raw_2d[~mask_2d], atol=1e-6)
+    # Where mask == 1, blended_2d must follow (1 - rho) * img + rho * vmax
+    ww = win.viewer_axial.slice_canvas.window_width
+    wl = win.viewer_axial.slice_canvas.window_level
+    vmin, vmax = wl - ww * 0.5, wl + ww * 0.5
+    expected_masked = 0.40 * np.clip(raw_2d[mask_2d], vmin, vmax) + 0.60 * vmax
+    assert np.allclose(blended_2d[mask_2d], expected_masked, atol=1e-5)
+
+    # (3) Test importing a custom modular @view_plugin Python script
+    with tempfile.TemporaryDirectory() as tmpdir:
+        custom_view_py = Path(tmpdir) / "custom_dataset_view.py"
+        custom_view_py.write_text(
+            "import numpy as np\n"
+            "from miav.plugin_sdk import ViewContext, view_plugin\n\n"
+            "@view_plugin(name='Custom Dataset View', category='Custom', plugin_id='custom_ds_view')\n"
+            "def my_custom_view(ctx: ViewContext) -> np.ndarray:\n"
+            "    m = (ctx.mask_2d > 0.5) if ctx.mask_2d is not None else np.zeros_like(ctx.image_2d, dtype=bool)\n"
+            "    return np.where(m, (1.0 - ctx.rho) * ctx.image_2d + ctx.rho * float(ctx.image_2d.max()), ctx.image_2d).astype(np.float32)\n",
+            encoding="utf-8",
+        )
+        REGISTRY.load_file(custom_view_py)
+        assert "custom_ds_view" in REGISTRY.last_loaded_views
+        win._refresh_plugin_ui()
+        win.viewer_axial.set_view_plugin("custom_ds_view")
+        assert win.viewer_axial.view_plugin_id == "custom_ds_view"
+
     win.close()
     print("ALL UPDATED END-TO-END TESTS PASSED SUCCESSFULLY!")
 

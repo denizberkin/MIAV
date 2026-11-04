@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 
 from miav.core.data_models import MedicalVolume
-from miav.core.loaders import attach_external_csv, load_medical_path
+from miav.core.loaders import attach_external_csv, attach_external_mask, load_medical_path
 from miav.core.synthetic import (
     create_synthetic_fastmri_study,
     create_synthetic_head_ct_study,
@@ -35,10 +35,13 @@ from miav.ui.qt_compat import (
     QKeySequence,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QShortcut,
+    QSlider,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -329,8 +332,84 @@ class MiavMainWindow(QMainWindow):
         self.transform_panel.pipelineChanged.connect(self._on_transform_pipeline_changed)
         self.transform_panel.importScriptRequested.connect(self._on_import_python_plugin)
 
+        # Tab 3: Modular Views & Segmentation Masks (@view_plugin)
+        views_tab = QWidget()
+        vt_layout = QVBoxLayout(views_tab)
+        vt_layout.setContentsMargins(6, 6, 6, 6)
+        vt_layout.setSpacing(6)
+
+        mask_file_row = QHBoxLayout()
+        self.load_mask_btn = QPushButton("Load Mask...")
+        self.load_mask_btn.setToolTip("Load a 2D/3D segmentation mask (.nii.gz, .dcm, .npy, .png, .h5)")
+        self.load_mask_btn.clicked.connect(self._on_load_mask_dialog)
+        mask_file_row.addWidget(self.load_mask_btn)
+
+        self.clear_mask_btn = QPushButton("Auto Mask")
+        self.clear_mask_btn.setToolTip("Reset to automatic clinical CSV / anatomical segmentation mask")
+        self.clear_mask_btn.clicked.connect(self._on_reset_auto_mask)
+        mask_file_row.addWidget(self.clear_mask_btn)
+        vt_layout.addLayout(mask_file_row)
+
+        self.show_mask_another_view_btn = QPushButton("1. Show Mask as Another View")
+        self.show_mask_another_view_btn.setToolTip(
+            "Display the standalone Segmentation Mask in a companion viewport synchronized to the active slice"
+        )
+        self.show_mask_another_view_btn.clicked.connect(self.show_mask_as_another_view)
+        vt_layout.addWidget(self.show_mask_another_view_btn)
+
+        self.toggle_alpha_overlay_btn = QPushButton("2. Combine Alpha: (1-ρ)·Img + ρ·Mask")
+        self.toggle_alpha_overlay_btn.setToolTip(
+            "Toggle (1 - rho) * image + rho * mask overlay (where mask == 1) on the active viewport (Shortcut: O)"
+        )
+        self.toggle_alpha_overlay_btn.clicked.connect(self.toggle_mask_alpha_overlay)
+        vt_layout.addWidget(self.toggle_alpha_overlay_btn)
+
+        rho_card = QFrame(views_tab)
+        rho_card.setObjectName("CardPanel")
+        rho_layout = QVBoxLayout(rho_card)
+        rho_layout.setContentsMargins(7, 6, 7, 6)
+        rho_layout.setSpacing(4)
+
+        rho_hdr = QHBoxLayout()
+        self.rho_lbl = QLabel("Alpha (ρ): 0.45")
+        self.rho_lbl.setStyleSheet("font-weight: 600; color: #e4e4e7;")
+        rho_hdr.addWidget(self.rho_lbl)
+        rho_hdr.addStretch(1)
+        self.mask_color_combo = QComboBox()
+        self.mask_color_combo.addItem("Emerald", "emerald")
+        self.mask_color_combo.addItem("Red", "red")
+        self.mask_color_combo.addItem("Cyan", "cyan")
+        self.mask_color_combo.addItem("Yellow", "yellow")
+        self.mask_color_combo.addItem("Grayscale (1.0)", "grayscale")
+        self.mask_color_combo.currentIndexChanged.connect(self._on_mask_params_changed)
+        rho_hdr.addWidget(self.mask_color_combo)
+        rho_layout.addLayout(rho_hdr)
+
+        self.mask_rho_slider = QSlider(Qt.Orientation.Horizontal)
+        self.mask_rho_slider.setRange(0, 100)
+        self.mask_rho_slider.setValue(45)
+        self.mask_rho_slider.valueChanged.connect(self._on_mask_params_changed)
+        rho_layout.addWidget(self.mask_rho_slider)
+        vt_layout.addWidget(rho_card)
+
+        self.view_plugin_search = QLineEdit()
+        self.view_plugin_search.setPlaceholderText("Search modular views (@view_plugin)...")
+        self.view_plugin_search.textChanged.connect(self._populate_view_plugin_list)
+        vt_layout.addWidget(self.view_plugin_search)
+
+        self.view_plugin_list = QListWidget(views_tab)
+        self.view_plugin_list.itemDoubleClicked.connect(self._on_view_plugin_double_clicked)
+        self._populate_view_plugin_list()
+        vt_layout.addWidget(self.view_plugin_list, 1)
+
+        import_view_btn = QPushButton("Import Custom View .py...")
+        import_view_btn.setToolTip("Import a modular Python @view_plugin script")
+        import_view_btn.clicked.connect(self._on_import_python_plugin)
+        vt_layout.addWidget(import_view_btn)
+
         self.left_tabs.addTab(analytics_tab, "Analytics")
         self.left_tabs.addTab(self.transform_panel, "Transforms")
+        self.left_tabs.addTab(views_tab, "Views / Masks")
         lp_layout.addWidget(self.left_tabs, 1)
         self.main_splitter.addWidget(self.left_panel_container)
 
@@ -453,6 +532,7 @@ class MiavMainWindow(QMainWindow):
         QShortcut(QKeySequence("Escape"), self, activated=lambda: self.set_annotation_mode("navigate"))
         QShortcut(QKeySequence("L"), self, activated=lambda: self.set_annotation_mode("laser"))
         QShortcut(QKeySequence("P"), self, activated=lambda: self.set_annotation_mode("pen"))
+        QShortcut(QKeySequence("O"), self, activated=self.toggle_mask_alpha_overlay)
         QShortcut(QKeySequence("Z"), self, activated=self.undo_last_pen_annotation)
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo_last_pen_annotation)
         QShortcut(QKeySequence("C"), self, activated=self.clear_all_annotations)
@@ -796,6 +876,10 @@ class MiavMainWindow(QMainWindow):
         return (z, y, x)
 
     def _on_viewport_slice_changed(self, plane: str, slice_idx: int) -> None:
+        # Synchronize any companion viewport displaying the same anatomical plane (e.g., side-by-side Segmentation Mask view)
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            if vw is not self.active_viewer and vw.plane == plane and vw.slice_idx != slice_idx:
+                vw.set_slice_and_cursor_silent(slice_idx, vw.slice_canvas.cursor_yx)
         if plane in ("axial", "sagittal", "coronal"):
             self.viewer_3d.set_active_cut_plane(plane)
         z, y, x = self._current_zyx_indices()
@@ -888,6 +972,7 @@ class MiavMainWindow(QMainWindow):
                 roi_crop = disp_2d[y0:y1, x0:x1]
 
         ks_2d = self.active_volume.get_kspace_slice(eff_plane, vw.slice_idx)
+        mask_2d = self.active_volume.get_mask_slice(eff_plane, vw.slice_idx)
         return AnalysisContext(
             image_2d=disp_2d,
             raw_image_2d=raw_2d,
@@ -906,6 +991,7 @@ class MiavMainWindow(QMainWindow):
             metadata=self.active_volume.metadata_df,
             window_width=vw.slice_canvas.window_width,
             window_level=vw.slice_canvas.window_level,
+            mask_2d=mask_2d,
         )
 
     def refresh_all_analytics(self, immediate: bool = False) -> None:
@@ -1005,6 +1091,104 @@ class MiavMainWindow(QMainWindow):
         self.status_bar.showMessage("Cleared annotations.")
 
     # =========================================================================
+    # Segmentation Masks & Modular Views (@view_plugin)
+    # =========================================================================
+    def _on_load_mask_dialog(self) -> None:
+        mask_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open 2D/3D Segmentation Mask (.nii, .nii.gz, .dcm, .h5, .npy, .png, .tif)",
+            str(Path.cwd()),
+            "Segmentation Masks (*.nii *.nii.gz *.dcm *.ima *.h5 *.hdf5 *.npy *.npz *.png *.tif *.tiff);;All Files (*)",
+        )
+        if mask_path:
+            self.load_mask_path(mask_path)
+
+    def load_mask_path(self, mask_path: str | Path) -> None:
+        try:
+            eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
+            mammo_target = eff_plane if eff_plane in ("rcc", "lcc", "rmlo", "lmlo") else None
+            attach_external_mask(self.active_volume, mask_path, mammo_view=mammo_target)
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                vw.refresh_slice(force=True)
+            self.refresh_all_analytics(immediate=True)
+            self.status_bar.showMessage(f"Loaded segmentation mask: {Path(mask_path).name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Mask Load Error", f"Could not load segmentation mask:\n{exc}")
+
+    def _on_reset_auto_mask(self) -> None:
+        self.active_volume.mask_volume = None
+        self.active_volume.mammo_masks.clear()
+        self.active_volume.mask_name = ""
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.refresh_slice(force=True)
+        self.refresh_all_analytics(immediate=True)
+        self.status_bar.showMessage("Reverted to automatic clinical/anatomical segmentation mask.")
+
+    def show_mask_as_another_view(self) -> None:
+        """
+        Show the segmentation mask as a standalone view in a companion viewport
+        synchronized to the active viewport's plane and slice index.
+        """
+        src_vw = self.active_viewer
+        eff_plane = "axial" if src_vw.plane == "vol3d" else src_vw.plane
+        companion = self.viewer_sagittal if src_vw is not self.viewer_sagittal else self.viewer_axial
+        companion.setVisible(True)
+        companion.set_plane(eff_plane)
+        companion.set_slice_and_cursor_silent(src_vw.slice_idx, src_vw.slice_canvas.cursor_yx)
+        companion.set_view_plugin("segmentation_mask")
+        self.status_bar.showMessage(
+            f"Showing standalone Segmentation Mask in companion viewport ({eff_plane.upper()} #{src_vw.slice_idx + 1})."
+        )
+
+    def toggle_mask_alpha_overlay(self) -> None:
+        """
+        Toggle `(1 - rho) * image + rho * mask` alpha overlay (where mask == 1)
+        on the currently active viewport.
+        """
+        vw = self.active_viewer
+        if vw.view_plugin_id == "mask_alpha_overlay":
+            vw.set_view_plugin("original_view")
+            self.status_bar.showMessage("Mask Alpha Overlay disabled (Original View).")
+        else:
+            vw.set_view_plugin("mask_alpha_overlay")
+            rho = self.mask_rho_slider.value() / 100.0
+            self.status_bar.showMessage(
+                f"Mask Alpha Overlay enabled: (1 - {rho:.2f})·Image + {rho:.2f}·Mask (where Mask=1)."
+            )
+
+    def set_mask_rho(self, rho: float) -> None:
+        val = int(round(np.clip(rho, 0.0, 1.0) * 100.0))
+        self.mask_rho_slider.setValue(val)
+
+    def _on_mask_params_changed(self) -> None:
+        rho = self.mask_rho_slider.value() / 100.0
+        color = str(self.mask_color_combo.currentData())
+        self.rho_lbl.setText(f"Alpha (ρ): {rho:.2f}")
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.set_mask_params(rho, color)
+
+    def _populate_view_plugin_list(self, query: str = "") -> None:
+        self.view_plugin_list.clear()
+        q = query.strip().lower()
+        for vid, vspec in REGISTRY.views.items():
+            if q and (
+                q not in vspec.name.lower()
+                and q not in vspec.full_name.lower()
+                and q not in vspec.category.lower()
+                and q not in vspec.description.lower()
+            ):
+                continue
+            item = QListWidgetItem(f"[{vspec.category}] {vspec.name}")
+            item.setData(Qt.ItemDataRole.UserRole, vid)
+            item.setToolTip(vspec.tooltip_text)
+            self.view_plugin_list.addItem(item)
+
+    def _on_view_plugin_double_clicked(self, item: QListWidgetItem) -> None:
+        vid = str(item.data(Qt.ItemDataRole.UserRole))
+        self.active_viewer.set_view_plugin(vid)
+        self.status_bar.showMessage(f"Applied view '{vid}' to active viewport.")
+
+    # =========================================================================
     # Dynamic Plugin Importing & Hot-Reloading
     # =========================================================================
     def _on_plugin_double_clicked(self, plugin_id: str) -> None:
@@ -1015,21 +1199,24 @@ class MiavMainWindow(QMainWindow):
     def _on_import_python_plugin(self) -> None:
         py_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Import Custom Python Analytics or Transform Script (.py)",
+            "Import Custom Python Analytics, Transform, or View Script (.py)",
             str(Path.cwd()),
             "Python Scripts (*.py)",
         )
         if not py_path:
             return
         new_a, new_t = REGISTRY.load_file(py_path)
+        new_v = list(REGISTRY.last_loaded_views)
         self._refresh_plugin_ui()
         if new_a:
             self.slot_a.setVisible(True)
             self.slot_a.set_plugin(new_a[0])
         if new_t:
             self.transform_panel.add_transform_by_id(new_t[0])
+        if new_v:
+            self.active_viewer.set_view_plugin(new_v[0])
         self.status_bar.showMessage(
-            f"Imported {Path(py_path).name}: +{len(new_a)} analytics, +{len(new_t)} transforms."
+            f"Imported {Path(py_path).name}: +{len(new_a)} analytics, +{len(new_t)} transforms, +{len(new_v)} views."
         )
 
     def _reload_all_plugins(self) -> None:
@@ -1037,11 +1224,14 @@ class MiavMainWindow(QMainWindow):
         REGISTRY.discover_directory(plugins_dir)
         self._refresh_plugin_ui()
         self.refresh_all_analytics(immediate=True)
-        self.status_bar.showMessage("Reloaded all Python analytics and transform plugins.")
+        self.status_bar.showMessage("Reloaded all Python analytics, transform, and view plugins.")
 
     def _refresh_plugin_ui(self) -> None:
         self.plugin_list.populate_from_registry(self.analytics_search.text())
         self.transform_panel.refresh_catalog()
+        self._populate_view_plugin_list(self.view_plugin_search.text())
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.refresh_view_plugin_choices()
         for slot in (self.slot_a, self.slot_b, self.slot_c):
             slot.refresh_plugin_choices()
         self._update_active_analytics_sidebar_highlights()

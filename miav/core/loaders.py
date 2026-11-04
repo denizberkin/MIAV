@@ -577,3 +577,23 @@ def attach_external_csv(volume: MedicalVolume, csv_path: str | Path) -> pl.DataF
         else:
             volume.metadata_df = new_df
     return df
+
+
+def attach_external_mask(
+    volume: MedicalVolume,
+    mask_path: str | Path,
+    mammo_view: Optional[str] = None,
+) -> np.ndarray:
+    """
+    Load an external 2D or 3D segmentation mask file (NIfTI, DICOM, HDF5, NumPy, PNG/TIFF)
+    and attach it to `volume.mask_volume` (or `volume.mammo_masks[mammo_view]`).
+    """
+    mask_vol_obj = load_medical_path(mask_path)
+    raw_mask = mask_vol_obj.volume
+    bin_mask = (raw_mask > 0).astype(np.float32)
+    volume.mask_name = Path(mask_path).name
+    if mammo_view and mammo_view.lower() in ("rcc", "lcc", "rmlo", "lmlo"):
+        volume.mammo_masks[mammo_view.lower()] = bin_mask[0]
+        return bin_mask[0]
+    volume.mask_volume = bin_mask
+    return bin_mask
