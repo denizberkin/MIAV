@@ -32,19 +32,21 @@ from miav.ui.main_window import MiavMainWindow
 def test_end_to_end() -> None:
     app = QApplication.instance() or QApplication([])
 
-    # 1. Generate sample NIfTI, FastMRI HDF5 + CSV, and 3D DICOM Series
+    # 1. Generate sample NIfTI, FastMRI HDF5 + CSV, 3D DICOM Series, and 2D Mammography DICOM
     sample_dir = generate_all_samples("sample_data")
     nifti_path = sample_dir / "brain_t1w_mprage.nii.gz"
     h5_path = sample_dir / "fastmri_brain_flair.h5"
     csv_path = sample_dir / "fastmri_brain_metadata.csv"
     dcm_dir = sample_dir / "head_ct_dicom_series"
+    mammo_path = sample_dir / "mammography_mlo_2d.dcm"
 
     assert nifti_path.exists()
     assert h5_path.exists()
     assert csv_path.exists()
     assert dcm_dir.exists() and len(list(dcm_dir.glob("*.dcm"))) == 24
+    assert mammo_path.exists()
 
-    # 2. Test NIfTI, FastMRI HDF5, and DICOM Loaders
+    # 2. Test NIfTI, FastMRI HDF5, 3D DICOM Series, and 2D Mammography DICOM Loaders
     vol_nii = load_medical_path(nifti_path)
     assert vol_nii.is_3d and vol_nii.shape == (64, 128, 128)
     vol_h5 = load_medical_path(h5_path)
@@ -53,6 +55,8 @@ def test_end_to_end() -> None:
     assert df_csv.height == 2
     vol_dcm = load_medical_path(dcm_dir)
     assert vol_dcm.is_3d and vol_dcm.modality == "CT"
+    vol_mg = load_medical_path(mammo_path)
+    assert not vol_mg.is_3d and vol_mg.modality == "MG" and vol_mg.shape == (1, 512, 384)
 
     # 3. Test Plugin Discovery & All Analytics/Transform Plugins
     plugins_root = Path(__file__).resolve().parent.parent / "plugins"
@@ -209,6 +213,11 @@ def test_end_to_end() -> None:
     # Switching loaded image must auto-clear all persistent pen strokes
     win.open_path(nifti_path)
     assert len(overlay.pen_strokes) == 0
+
+    # Opening 2D Mammography DICOM focuses 2D Axial view automatically
+    win.open_path(mammo_path)
+    assert not win.active_volume.is_3d and win.active_volume.modality == "MG"
+    assert win.viewer_axial.isVisible() and not win.viewer_sagittal.isVisible()
 
     win.close()
     print("ALL UPDATED END-TO-END TESTS PASSED SUCCESSFULLY!")

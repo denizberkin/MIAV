@@ -330,6 +330,8 @@ class Interactive3DCanvas(QWidget):
         border_color: QColor,
     ) -> None:
         sh, sw = slice_norm.shape
+        if sh < 2 or sw < 2:
+            return
         dst_pts = np.array(
             [self._project_3d_point(x, y, z, width, height) for x, y, z in quad_3d],
             dtype=np.float32,

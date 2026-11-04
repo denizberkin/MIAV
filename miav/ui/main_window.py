@@ -18,6 +18,7 @@ from miav.core.loaders import attach_external_csv, load_medical_path
 from miav.core.synthetic import (
     create_synthetic_fastmri_study,
     create_synthetic_head_ct_study,
+    create_synthetic_mammography_study,
     create_synthetic_t1_mri_study,
 )
 from miav.core.transform_pipeline import TransformPipeline
@@ -68,6 +69,7 @@ class MiavMainWindow(QMainWindow):
             create_synthetic_fastmri_study(),
             create_synthetic_t1_mri_study(),
             create_synthetic_head_ct_study(),
+            create_synthetic_mammography_study(),
         ]
         self.active_volume: MedicalVolume = self.studies[0]
         self.active_roi_bounds: Optional[tuple[int, int, int, int]] = None
@@ -566,6 +568,17 @@ class MiavMainWindow(QMainWindow):
         self.viewer_sagittal.set_volume(volume, self.transform_pipeline)
         self.viewer_coronal.set_volume(volume, self.transform_pipeline)
         self.viewer_3d.set_volume(volume)
+
+        if not volume.is_3d:
+            # For 2D studies (e.g., 2D Digital Mammography or X-Ray), automatically focus the 2D Axial viewport
+            self.viewer_axial.set_plane("axial")
+            self.viewer_axial.setVisible(True)
+            self.viewer_sagittal.setVisible(False)
+            self.viewer_coronal.setVisible(False)
+            self.viewer_3d.setVisible(False)
+            self._select_active_viewer(self.viewer_axial, trigger_analytics=False)
+        else:
+            self._apply_layout_mode(self.layout_mode)
 
         eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
         self.metadata_panel.set_volume(volume, plane=eff_plane, slice_idx=self.active_viewer.slice_idx)

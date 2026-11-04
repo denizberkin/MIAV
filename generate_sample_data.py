@@ -18,7 +18,7 @@ import pydicom
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-from miav.core.synthetic import generate_brain_3d_array
+from miav.core.synthetic import generate_brain_3d_array, generate_mammogram_2d_array
 
 
 def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
@@ -145,6 +145,57 @@ def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
             ds.PixelRepresentation = 0
             ds.PixelData = raw_pixels.tobytes()
             pydicom.dcmwrite(str(slice_path), ds, write_like_original=False)
+
+    # 4. 2D Digital Mammography DICOM File (.dcm)
+    mammo_path = root / "mammography_mlo_2d.dcm"
+    if not mammo_path.exists():
+        img_mg = generate_mammogram_2d_array(shape=(512, 384))
+        file_meta = FileMetaDataset()
+        file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.1.2"  # Digital Mammography X-Ray Image Storage
+        file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+        ds = FileDataset(str(mammo_path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+        ds.is_little_endian = True
+        ds.is_implicit_VR = False
+
+        ds.PatientName = "BreastPhantom^MammoMLO"
+        ds.PatientID = "MG_BREAST_001"
+        ds.PatientSex = "F"
+        ds.PatientAge = "052Y"
+        ds.Modality = "MG"
+        ds.Manufacturer = "MIAV Synthetic FFDM"
+        ds.StudyDescription = "Screening Digital Mammography Bilateral"
+        ds.SeriesDescription = "R MLO Full-Field Digital Mammogram"
+        ds.BodyPartExamined = "BREAST"
+        ds.ViewPosition = "MLO"
+        ds.ImageLaterality = "R"
+        ds.CompressionForce = 115.0
+        ds.BodyPartThickness = 52.0
+        ds.AnodeTargetMaterial = "RHODIUM"
+        ds.FilterMaterial = "RHODIUM"
+        ds.StudyInstanceUID = generate_uid()
+        ds.SeriesInstanceUID = generate_uid()
+        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+        ds.InstanceNumber = 1
+        ds.PixelSpacing = [0.07, 0.07]
+        ds.KVP = 28.0
+        ds.WindowCenter = 2000.0
+        ds.WindowWidth = 2800.0
+        ds.RescaleIntercept = 0.0
+        ds.RescaleSlope = 1.0
+
+        raw_mg = np.clip(img_mg, 0, 4095).astype(np.uint16)
+        ds.Rows, ds.Columns = raw_mg.shape
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = 16
+        ds.BitsStored = 12
+        ds.HighBit = 11
+        ds.PixelRepresentation = 0
+        ds.PixelData = raw_mg.tobytes()
+        pydicom.dcmwrite(str(mammo_path), ds, write_like_original=False)
 
     return root
 

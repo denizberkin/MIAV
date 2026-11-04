@@ -278,15 +278,24 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         dcm_files = sorted(
             [p for p in path.iterdir() if p.is_file() and (p.suffix.lower() in (".dcm", ".ima", "") and not p.name.startswith("."))]
         )
+        target_series_uid = None
     else:
-        # Check if sibling .dcm files belong to the same 3D series
+        # Check if sibling .dcm files belong to the exact same 3D SeriesInstanceUID
+        try:
+            primary_ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+            target_series_uid = getattr(primary_ds, "SeriesInstanceUID", None)
+        except Exception:
+            target_series_uid = None
         siblings = sorted([p for p in path.parent.glob("*.dcm") if p.is_file()])
-        dcm_files = siblings if len(siblings) > 1 else [path]
+        dcm_files = siblings if (len(siblings) > 1 and target_series_uid is not None) else [path]
 
     datasets = []
     for f in dcm_files:
         try:
             ds = pydicom.dcmread(str(f), force=True)
+            if not path.is_dir() and target_series_uid is not None:
+                if getattr(ds, "SeriesInstanceUID", None) != target_series_uid:
+                    continue
             if hasattr(ds, "pixel_array"):
                 datasets.append((f, ds))
         except Exception:
@@ -334,6 +343,8 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     modality = str(getattr(first_ds, "Modality", "MRI")).upper()
     if "CT" in modality:
         modality_norm = "CT"
+    elif "MG" in modality:
+        modality_norm = "MG"
     elif "CR" in modality or "DX" in modality or "XR" in modality:
         modality_norm = "XRAY"
     else:
@@ -350,6 +361,13 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         ("InstitutionName", "Institution"),
         ("StudyDescription", "Study Description"),
         ("SeriesDescription", "Series Description"),
+        ("BodyPartExamined", "Body Part Examined"),
+        ("ViewPosition", "View Position"),
+        ("ImageLaterality", "Image Laterality"),
+        ("CompressionForce", "Compression Force (N)"),
+        ("BodyPartThickness", "Compressed Thickness (mm)"),
+        ("AnodeTargetMaterial", "Anode Target Material"),
+        ("FilterMaterial", "Filter Material"),
         ("ProtocolName", "Protocol Name"),
         ("ScanningSequence", "Scanning Sequence"),
         ("MagneticFieldStrength", "Field Strength (T)"),
