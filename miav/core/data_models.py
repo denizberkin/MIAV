@@ -43,6 +43,9 @@ class MedicalVolume:
     )
     external_csv_df: Optional[pl.DataFrame] = None
     default_window: Optional[tuple[float, float]] = None  # Optional (window_width, window_level) from DICOM header
+    study_mode: str = ""  # "mri_3d", "mri_2d", "single_mammo", "multi_mammo"
+    mammo_views: dict[str, np.ndarray] = field(default_factory=dict)  # keys: "rmlo", "lmlo", "rcc", "lcc"
+    primary_mammo_view: str = "rcc"
 
     def __post_init__(self) -> None:
         if self.volume.ndim == 2:
@@ -55,9 +58,20 @@ class MedicalVolume:
                 while self.volume.ndim > 3:
                     self.volume = np.mean(self.volume, axis=0)
         self.volume = np.ascontiguousarray(self.volume, dtype=np.float32)
+        if not self.study_mode:
+            if self.modality == "MG":
+                self.study_mode = "multi_mammo" if len(self.mammo_views) > 1 else "single_mammo"
+            else:
+                self.study_mode = "mri_3d" if self.volume.shape[0] > 1 else "mri_2d"
+
+    @property
+    def is_mammography(self) -> bool:
+        return self.modality == "MG" or self.study_mode in ("single_mammo", "multi_mammo")
 
     @property
     def is_3d(self) -> bool:
+        if self.study_mode in ("mri_2d", "single_mammo", "multi_mammo"):
+            return False
         return self.volume.shape[0] > 1
 
     @property
@@ -67,6 +81,8 @@ class MedicalVolume:
 
     def num_slices(self, plane: str = "axial") -> int:
         plane = plane.lower()
+        if plane in ("rcc", "lcc", "rmlo", "lmlo", "single") or not self.is_3d:
+            return 1
         z, y, x = self.volume.shape
         if plane == "sagittal":
             return int(x)
@@ -76,10 +92,20 @@ class MedicalVolume:
 
     def get_slice(self, plane: str = "axial", index: int = 0) -> np.ndarray:
         """
-        Return a 2D slice (H, W) in float32 along the requested anatomical plane.
-        Zero-copy view into `self.volume` wherever possible.
+        Return a 2D slice (H, W) in float32 along the requested anatomical plane
+        or mammography view ('rcc', 'lcc', 'rmlo', 'lmlo', 'single').
         """
         plane = plane.lower()
+        if plane in ("rcc", "lcc", "rmlo", "lmlo"):
+            if plane in self.mammo_views:
+                return self.mammo_views[plane]
+            if self.primary_mammo_view in self.mammo_views:
+                return self.mammo_views[self.primary_mammo_view]
+            if self.mammo_views:
+                return next(iter(self.mammo_views.values()))
+            return self.volume[0, :, :]
+        if plane == "single":
+            return self.volume[0, :, :]
         z, y, x = self.volume.shape
         if plane == "sagittal":
             idx = int(np.clip(index, 0, x - 1))

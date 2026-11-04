@@ -89,9 +89,8 @@ class MiavMainWindow(QMainWindow):
         sample_root = Path(__file__).resolve().parent.parent.parent / "sample_data"
         real_candidates = [
             sample_root / "fastmri_knee_singlecoil.h5",
-            sample_root / "vindr_mammo_r_cc.dcm",
-            sample_root / "vindr_mammo_r_mlo.dcm",
             sample_root / "brain_t1w_real.nii.gz",
+            sample_root / "vindr_mammo_r_mlo.dcm",
             sample_root / "real_ct_dicom_series",
         ]
         loaded: list[MedicalVolume] = []
@@ -136,11 +135,23 @@ class MiavMainWindow(QMainWindow):
         tb_layout.addWidget(open_dir_btn)
 
         self.study_combo = QComboBox()
-        self.study_combo.setMinimumWidth(210)
+        self.study_combo.setMinimumWidth(200)
         for st in self.studies:
             self.study_combo.addItem(st.name)
         self.study_combo.currentIndexChanged.connect(self._on_study_combo_changed)
         tb_layout.addWidget(self.study_combo)
+
+        tb_layout.addWidget(QLabel("Mode:"))
+        self.modality_mode_combo = QComboBox()
+        self.modality_mode_combo.setToolTip(
+            "Input modality / view mode (auto-detected on load, or switch manually)"
+        )
+        self.modality_mode_combo.addItem("3D MRI / Volume", "mri_3d")
+        self.modality_mode_combo.addItem("2D MRI / Single View", "mri_2d")
+        self.modality_mode_combo.addItem("Single-View Mammo", "single_mammo")
+        self.modality_mode_combo.addItem("Multi-View Mammo (4-View)", "multi_mammo")
+        self.modality_mode_combo.currentIndexChanged.connect(self._on_modality_mode_changed)
+        tb_layout.addWidget(self.modality_mode_combo)
 
         tb_layout.addWidget(QLabel("Layout:"))
         self.layout_combo = QComboBox()
@@ -334,9 +345,11 @@ class MiavMainWindow(QMainWindow):
         self.viewer_axial = SliceViewerWidget(initial_plane="axial", parent=self)
         self.viewer_sagittal = SliceViewerWidget(initial_plane="sagittal", parent=self)
         self.viewer_coronal = SliceViewerWidget(initial_plane="coronal", parent=self)
+        self.viewer_mammo_4 = SliceViewerWidget(initial_plane="lcc", parent=self)
+        self.viewer_mammo_4.setVisible(False)
         self.viewer_3d = Volume3DViewerWidget(parent=self)
 
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.viewActivated.connect(self._on_viewer_activated)
             vw.sliceChanged.connect(self._on_viewport_slice_changed)
             vw.cursorChanged.connect(self._on_viewport_cursor_changed)
@@ -352,6 +365,7 @@ class MiavMainWindow(QMainWindow):
         self.viewport_grid.addWidget(self.viewer_sagittal, 0, 1)
         self.viewport_grid.addWidget(self.viewer_coronal, 1, 0)
         self.viewport_grid.addWidget(self.viewer_3d, 1, 1)
+        self.viewport_grid.addWidget(self.viewer_mammo_4, 1, 1)
 
         self.main_splitter.addWidget(self.viewport_container)
 
@@ -433,7 +447,7 @@ class MiavMainWindow(QMainWindow):
         QShortcut(QKeySequence("1"), self, activated=lambda: self._activate_or_switch_plane("axial"))
         QShortcut(QKeySequence("2"), self, activated=lambda: self._activate_or_switch_plane("sagittal"))
         QShortcut(QKeySequence("3"), self, activated=lambda: self._activate_or_switch_plane("coronal"))
-        QShortcut(QKeySequence("4"), self, activated=lambda: self.active_viewer.set_plane("vol3d"))
+        QShortcut(QKeySequence("4"), self, activated=lambda: self._activate_or_switch_plane("vol3d"))
         QShortcut(QKeySequence("Space"), self, activated=self.cycle_layout_mode)
         QShortcut(QKeySequence("N"), self, activated=lambda: self.set_annotation_mode("navigate"))
         QShortcut(QKeySequence("Escape"), self, activated=lambda: self.set_annotation_mode("navigate"))
@@ -452,15 +466,33 @@ class MiavMainWindow(QMainWindow):
         QShortcut(QKeySequence("J"), self, activated=lambda: self.active_viewer.step_slice(-1, False))
 
     def _activate_or_switch_plane(self, plane: str) -> None:
-        if self.layout_mode == "quad_mpr":
-            target = {
-                "axial": self.viewer_axial,
-                "sagittal": self.viewer_sagittal,
-                "coronal": self.viewer_coronal,
-            }.get(plane, self.viewer_axial)
-            self._select_active_viewer(target, trigger_analytics=True)
+        sm = self.active_volume.study_mode
+        if sm in ("single_mammo", "multi_mammo"):
+            mammo_map = {
+                "axial": ("rmlo", self.viewer_axial),
+                "sagittal": ("lmlo", self.viewer_sagittal),
+                "coronal": ("rcc", self.viewer_coronal),
+                "vol3d": ("lcc", self.viewer_mammo_4),
+            }
+            m_plane, target_vw = mammo_map.get(plane, ("rmlo", self.viewer_axial))
+            if self.layout_mode == "quad_mpr":
+                self._select_active_viewer(target_vw, trigger_analytics=True)
+            else:
+                self.active_viewer.set_plane(m_plane)
+        elif sm == "mri_2d":
+            self.active_viewer.set_plane("single")
         else:
-            self.active_viewer.set_plane(plane)
+            if plane == "vol3d":
+                self.active_viewer.set_plane("vol3d")
+            elif self.layout_mode == "quad_mpr":
+                target = {
+                    "axial": self.viewer_axial,
+                    "sagittal": self.viewer_sagittal,
+                    "coronal": self.viewer_coronal,
+                }.get(plane, self.viewer_axial)
+                self._select_active_viewer(target, trigger_analytics=True)
+            else:
+                self.active_viewer.set_plane(plane)
 
     # =========================================================================
     # Panel Visibility Toggles (Zero-Lag When Closed)
@@ -522,11 +554,17 @@ class MiavMainWindow(QMainWindow):
     def _select_active_viewer(self, viewer: SliceViewerWidget, trigger_analytics: bool = True) -> None:
         changed = self.active_viewer is not viewer
         self.active_viewer = viewer
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_active_for_analytics(vw is viewer)
 
         eff_plane = "axial" if viewer.plane == "vol3d" else viewer.plane
-        self.analytics_header_lbl.setText(f"Analytics — Active: {eff_plane.title()}")
+        if eff_plane in ("axial", "sagittal", "coronal"):
+            self.viewer_3d.set_active_cut_plane(eff_plane)
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+                vw.vol3d_canvas.set_active_cut_plane(eff_plane)
+
+        plane_label = eff_plane.upper() if eff_plane in ("rcc", "lcc", "rmlo", "lmlo") else eff_plane.title()
+        self.analytics_header_lbl.setText(f"Analytics — Active: {plane_label}")
         if trigger_analytics and changed:
             self.metadata_panel.update_live_slice(eff_plane, viewer.slice_idx)
             self.refresh_all_analytics(immediate=True)
@@ -536,9 +574,41 @@ class MiavMainWindow(QMainWindow):
     # =========================================================================
     def _apply_layout_mode(self, mode: str) -> None:
         self.layout_mode = mode
-        for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_3d):
+        for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4, self.viewer_3d):
             v.set_expanded_state(False)
 
+        sm = self.active_volume.study_mode
+        if sm == "mri_2d":
+            self.viewer_axial.setVisible(True)
+            self.viewer_sagittal.setVisible(False)
+            self.viewer_coronal.setVisible(False)
+            self.viewer_mammo_4.setVisible(False)
+            self.viewer_3d.setVisible(False)
+            self._select_active_viewer(self.viewer_axial, trigger_analytics=False)
+            return
+
+        if sm in ("single_mammo", "multi_mammo"):
+            # Mammography has no 3D view; Quad layout displays RMLO, LMLO, RCC, LCC
+            self.viewer_3d.setVisible(False)
+            if mode == "quad_mpr":
+                self.viewer_axial.setVisible(True)
+                self.viewer_sagittal.setVisible(True)
+                self.viewer_coronal.setVisible(True)
+                self.viewer_mammo_4.setVisible(True)
+            elif mode == "dual_split":
+                self.viewer_axial.setVisible(True)
+                self.viewer_sagittal.setVisible(True)
+                self.viewer_coronal.setVisible(False)
+                self.viewer_mammo_4.setVisible(False)
+                if self.active_viewer not in (self.viewer_axial, self.viewer_sagittal):
+                    self._select_active_viewer(self.viewer_axial, trigger_analytics=False)
+            else:  # "single_focus"
+                for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                    v.setVisible(v is self.active_viewer)
+            return
+
+        # 3D MRI / Volume ("mri_3d")
+        self.viewer_mammo_4.setVisible(False)
         if mode == "dual_split":
             self.viewer_axial.setVisible(True)
             self.viewer_sagittal.setVisible(False)
@@ -564,7 +634,13 @@ class MiavMainWindow(QMainWindow):
         self.layout_combo.setCurrentIndex(idx)
 
     def _toggle_expand_viewport(self, target_widget: QWidget) -> None:
-        all_views = [self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_3d]
+        all_views = [
+            self.viewer_axial,
+            self.viewer_sagittal,
+            self.viewer_coronal,
+            self.viewer_mammo_4,
+            self.viewer_3d,
+        ]
         others_visible = any(v.isVisible() for v in all_views if v is not target_widget)
         if others_visible:
             for v in all_views:
@@ -577,40 +653,80 @@ class MiavMainWindow(QMainWindow):
             self._apply_layout_mode(self.layout_mode)
 
     # =========================================================================
-    # Study Loading & Switching
+    # Study Loading, Modality Mode Switching & View Configuration
     # =========================================================================
+    def _on_modality_mode_changed(self) -> None:
+        new_mode = str(self.modality_mode_combo.currentData())
+        if self.active_volume.study_mode != new_mode:
+            self.active_volume.study_mode = new_mode
+            self._configure_views_for_study_mode(self.active_volume)
+
+    def _configure_views_for_study_mode(self, volume: MedicalVolume) -> None:
+        sm = volume.study_mode
+        if sm in ("single_mammo", "multi_mammo"):
+            # Configure the 4 viewports for Mammography (RMLO, LMLO, RCC, LCC)
+            self.viewer_axial.configure_for_study_mode(sm, "rmlo")
+            self.viewer_sagittal.configure_for_study_mode(sm, "lmlo")
+            self.viewer_coronal.configure_for_study_mode(sm, "rcc")
+            self.viewer_mammo_4.configure_for_study_mode(sm, "lcc")
+        elif sm == "mri_2d":
+            self.viewer_axial.configure_for_study_mode(sm, "single")
+            self.viewer_sagittal.configure_for_study_mode(sm, "single")
+            self.viewer_coronal.configure_for_study_mode(sm, "single")
+            self.viewer_mammo_4.configure_for_study_mode(sm, "single")
+        else:  # "mri_3d"
+            self.viewer_axial.configure_for_study_mode(sm, "axial")
+            self.viewer_sagittal.configure_for_study_mode(sm, "sagittal")
+            self.viewer_coronal.configure_for_study_mode(sm, "coronal")
+            self.viewer_mammo_4.configure_for_study_mode(sm, "axial")
+
+        self.viewer_axial.set_volume(volume, self.transform_pipeline)
+        self.viewer_sagittal.set_volume(volume, self.transform_pipeline)
+        self.viewer_coronal.set_volume(volume, self.transform_pipeline)
+        self.viewer_mammo_4.set_volume(volume, self.transform_pipeline)
+        self.viewer_3d.set_volume(volume)
+
+        if sm == "single_mammo":
+            # Select the viewport corresponding to the loaded primary mammography view
+            view_to_widget = {
+                "rmlo": self.viewer_axial,
+                "lmlo": self.viewer_sagittal,
+                "rcc": self.viewer_coronal,
+                "lcc": self.viewer_mammo_4,
+            }
+            target_vw = view_to_widget.get(volume.primary_mammo_view, self.viewer_axial)
+            self._select_active_viewer(target_vw, trigger_analytics=False)
+        else:
+            if self.active_viewer is self.viewer_mammo_4 and sm == "mri_3d":
+                self._select_active_viewer(self.viewer_axial, trigger_analytics=False)
+            else:
+                self._select_active_viewer(self.active_viewer, trigger_analytics=False)
+
+        self._apply_layout_mode(self.layout_mode)
+        eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
+        self.metadata_panel.set_volume(volume, plane=eff_plane, slice_idx=self.active_viewer.slice_idx)
+        self.refresh_all_analytics(immediate=True)
+
     def _load_study_into_views(self, volume: MedicalVolume) -> None:
         self.active_volume = volume
         self.active_roi_bounds = None
 
         self.clear_all_annotations()
 
-        self.viewer_axial.set_volume(volume, self.transform_pipeline)
-        self.viewer_sagittal.set_volume(volume, self.transform_pipeline)
-        self.viewer_coronal.set_volume(volume, self.transform_pipeline)
-        self.viewer_3d.set_volume(volume)
+        self.modality_mode_combo.blockSignals(True)
+        idx = self.modality_mode_combo.findData(volume.study_mode)
+        if idx >= 0:
+            self.modality_mode_combo.setCurrentIndex(idx)
+        self.modality_mode_combo.blockSignals(False)
 
-        if not volume.is_3d:
-            # For 2D studies (e.g., 2D Digital Mammography or X-Ray), automatically focus the 2D Axial viewport
-            self.viewer_axial.set_plane("axial")
-            self.viewer_axial.setVisible(True)
-            self.viewer_sagittal.setVisible(False)
-            self.viewer_coronal.setVisible(False)
-            self.viewer_3d.setVisible(False)
-            self._select_active_viewer(self.viewer_axial, trigger_analytics=False)
-        else:
-            self._apply_layout_mode(self.layout_mode)
-
-        eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
-        self.metadata_panel.set_volume(volume, plane=eff_plane, slice_idx=self.active_viewer.slice_idx)
-        self.refresh_all_analytics(immediate=True)
+        self._configure_views_for_study_mode(volume)
         self.status_bar.showMessage(
-            f"Loaded '{volume.name}' — Shape: {volume.shape} | Modality: {volume.modality} | Spacing: {volume.spacing} mm"
+            f"Loaded '{volume.name}' — Mode: {volume.study_mode} | Shape: {volume.shape} | Modality: {volume.modality} | Spacing: {volume.spacing} mm"
         )
 
-    def open_path(self, path: str | Path) -> None:
+    def open_path(self, path: str | Path, study_mode: Optional[str] = None) -> None:
         try:
-            vol = load_medical_path(path)
+            vol = load_medical_path(path, study_mode=study_mode)
             self.studies.append(vol)
             self.study_combo.blockSignals(True)
             self.study_combo.addItem(vol.name)
@@ -633,7 +749,7 @@ class MiavMainWindow(QMainWindow):
     def _on_open_folder_dialog(self) -> None:
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Select 3D DICOM Series Directory",
+            "Select 3D DICOM Series or Multi-View Mammography Directory",
             str(Path.cwd()),
         )
         if folder:
@@ -666,12 +782,24 @@ class MiavMainWindow(QMainWindow):
     # =========================================================================
     # Synchronized 3D Crosshair Navigation & Single-View Analytics Dispatch
     # =========================================================================
+    def _current_zyx_indices(self) -> tuple[int, int, int]:
+        z = self.viewer_axial.slice_idx
+        y = self.viewer_coronal.slice_idx
+        x = self.viewer_sagittal.slice_idx
+        ap = self.active_viewer.plane
+        if ap == "axial":
+            z = self.active_viewer.slice_idx
+        elif ap == "coronal":
+            y = self.active_viewer.slice_idx
+        elif ap == "sagittal":
+            x = self.active_viewer.slice_idx
+        return (z, y, x)
+
     def _on_viewport_slice_changed(self, plane: str, slice_idx: int) -> None:
-        self.viewer_3d.set_slice_indices(
-            self.viewer_axial.slice_idx,
-            self.viewer_coronal.slice_idx,
-            self.viewer_sagittal.slice_idx,
-        )
+        if plane in ("axial", "sagittal", "coronal"):
+            self.viewer_3d.set_active_cut_plane(plane)
+        z, y, x = self._current_zyx_indices()
+        self.viewer_3d.set_slice_indices(z, y, x)
         self.metadata_panel.update_live_slice(plane, slice_idx)
         self.refresh_all_analytics(immediate=False)
 
@@ -709,8 +837,10 @@ class MiavMainWindow(QMainWindow):
             if self.viewer_sagittal.plane == "sagittal":
                 self.viewer_sagittal.set_slice_and_cursor_silent(x, (r_z, y))
         else:
-            z, y, x = self.viewer_axial.slice_idx, self.viewer_coronal.slice_idx, self.viewer_sagittal.slice_idx
+            z, y, x = self._current_zyx_indices()
 
+        if plane in ("axial", "sagittal", "coronal"):
+            self.viewer_3d.set_active_cut_plane(plane)
         self.viewer_3d.set_slice_indices(z, y, x)
         self.refresh_all_analytics(immediate=False)
 
@@ -724,7 +854,7 @@ class MiavMainWindow(QMainWindow):
         )
 
     def _on_viewport_wl_changed(self, new_width: float, new_level: float) -> None:
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_window_level(new_width, new_level)
 
     def _on_viewport_roi_changed(self, roi_bounds: Optional[tuple[int, int, int, int]]) -> None:
@@ -733,11 +863,16 @@ class MiavMainWindow(QMainWindow):
 
     def _on_primary_plane_switched(self, new_plane: str) -> None:
         eff = "axial" if new_plane == "vol3d" else new_plane
-        self.analytics_header_lbl.setText(f"Analytics — Active: {eff.title()}")
+        if eff in ("axial", "sagittal", "coronal"):
+            self.viewer_3d.set_active_cut_plane(eff)
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+                vw.vol3d_canvas.set_active_cut_plane(eff)
+        plane_label = eff.upper() if eff in ("rcc", "lcc", "rmlo", "lmlo") else eff.title()
+        self.analytics_header_lbl.setText(f"Analytics — Active: {plane_label}")
         self.refresh_all_analytics(immediate=True)
 
     def _on_transform_pipeline_changed(self) -> None:
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.refresh_slice()
         self.refresh_all_analytics(immediate=False)
 
@@ -763,11 +898,7 @@ class MiavMainWindow(QMainWindow):
             num_slices=self.active_volume.num_slices(eff_plane),
             spacing=self.active_volume.spacing,
             cursor_yx=vw.slice_canvas.cursor_yx,
-            cursor_zyx=(
-                self.viewer_axial.slice_idx,
-                self.viewer_coronal.slice_idx,
-                self.viewer_sagittal.slice_idx,
-            ),
+            cursor_zyx=self._current_zyx_indices(),
             roi_bounds=vw.slice_canvas.roi_bounds,
             roi_2d=roi_crop,
             study_name=self.active_volume.name,
@@ -810,7 +941,7 @@ class MiavMainWindow(QMainWindow):
 
     def reset_views(self) -> None:
         ww, wl = self.active_volume.default_window_level()
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.slice_canvas.zoom = 1.0
             vw.set_window_level(ww, wl)
         self.viewer_3d.reset_camera()
@@ -827,7 +958,7 @@ class MiavMainWindow(QMainWindow):
         self.laser_mode_btn.setChecked(mode == "laser")
         self.pen_mode_btn.setChecked(mode == "pen")
 
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_annotation_mode(mode, pin_to_slice=pin, pen_shape=self.pen_shape)
         self.viewer_3d.set_annotation_mode(mode, pin_to_slice=pin, pen_shape=self.pen_shape)
 
@@ -844,7 +975,7 @@ class MiavMainWindow(QMainWindow):
         self.set_annotation_mode("pen")
 
     def _on_pin_slice_toggled(self, checked: bool) -> None:
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_annotation_mode(self.annotation_mode, pin_to_slice=checked, pen_shape=self.pen_shape)
         self.viewer_3d.set_annotation_mode(self.annotation_mode, pin_to_slice=checked, pen_shape=self.pen_shape)
 
@@ -857,6 +988,8 @@ class MiavMainWindow(QMainWindow):
             self.viewer_sagittal.vol3d_canvas.annotation_overlay,
             self.viewer_coronal.slice_canvas.annotation_overlay,
             self.viewer_coronal.vol3d_canvas.annotation_overlay,
+            self.viewer_mammo_4.slice_canvas.annotation_overlay,
+            self.viewer_mammo_4.vol3d_canvas.annotation_overlay,
             self.viewer_3d.canvas.annotation_overlay,
         ]
         latest_overlay = max(overlays, key=lambda ov: ov.last_stroke_timestamp())
@@ -866,7 +999,7 @@ class MiavMainWindow(QMainWindow):
             self.status_bar.showMessage("No Pen drawings to undo.")
 
     def clear_all_annotations(self) -> None:
-        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.clear_annotations()
         self.viewer_3d.clear_annotations()
         self.status_bar.showMessage("Cleared annotations.")

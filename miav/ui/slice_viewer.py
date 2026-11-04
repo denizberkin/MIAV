@@ -209,10 +209,11 @@ class FastSliceCanvas(QWidget):
         val = float(img[cy, cx])
         painter.setPen(QColor("#e4e4e7"))
         painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        plane_title = "SINGLE VIEW" if self.plane == "single" else self.plane.upper()
         painter.drawText(
             8,
             16,
-            f"{self.plane.upper()} {self.slice_idx + 1}/{self.num_slices}",
+            f"{plane_title} {self.slice_idx + 1}/{self.num_slices}",
         )
         painter.setPen(QColor("#a1a1aa"))
         painter.setFont(QFont("Consolas", 8))
@@ -229,10 +230,19 @@ class FastSliceCanvas(QWidget):
 
         painter.setPen(QColor("#71717a"))
         painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        top_lbl = "A" if self.plane == "axial" else "S"
-        left_lbl = "R" if self.plane in ("axial", "coronal") else "A"
-        painter.drawText(int(self.width() * 0.5 - 4), 14, top_lbl)
-        painter.drawText(6, int(self.height() * 0.5 + 4), left_lbl)
+        if self.plane in ("rcc", "lcc", "rmlo", "lmlo"):
+            top_lbl = "S" if "mlo" in self.plane else "L"
+            left_lbl = "R" if self.plane.startswith("r") else "L"
+        elif self.plane == "single":
+            top_lbl = ""
+            left_lbl = ""
+        else:
+            top_lbl = "A" if self.plane == "axial" else "S"
+            left_lbl = "R" if self.plane in ("axial", "coronal") else "A"
+        if top_lbl:
+            painter.drawText(int(self.width() * 0.5 - 4), 14, top_lbl)
+        if left_lbl:
+            painter.drawText(6, int(self.height() * 0.5 + 4), left_lbl)
 
         painter.end()
 
@@ -429,6 +439,41 @@ class SliceViewerWidget(QFrame):
         self._is_expanded = expanded
         self.expand_btn.setText("Shrink" if expanded else "Expand")
 
+    def configure_for_study_mode(self, study_mode: str, preferred_plane: str) -> None:
+        """
+        Populate `plane_combo` according to the active study modality/mode:
+        - `mri_3d`: Axial, Sagittal, Coronal, 3D View
+        - `single_mammo` / `multi_mammo`: RCC, LCC, RMLO, LMLO
+        - `mri_2d`: Single View
+        """
+        self.plane_combo.blockSignals(True)
+        self.plane_combo.clear()
+        if study_mode in ("single_mammo", "multi_mammo"):
+            for lbl, data in (("RCC", "rcc"), ("LCC", "lcc"), ("RMLO", "rmlo"), ("LMLO", "lmlo")):
+                self.plane_combo.addItem(lbl, data)
+        elif study_mode == "mri_2d":
+            self.plane_combo.addItem("Single View", "single")
+        else:
+            for lbl, data in (
+                ("Axial", "axial"),
+                ("Sagittal", "sagittal"),
+                ("Coronal", "coronal"),
+                ("3D View", "vol3d"),
+            ):
+                self.plane_combo.addItem(lbl, data)
+
+        idx = self.plane_combo.findData(preferred_plane)
+        if idx < 0:
+            idx = 0
+        self.plane_combo.setCurrentIndex(idx)
+        self.plane = str(self.plane_combo.itemData(idx))
+        self.plane_combo.blockSignals(False)
+
+        if self.plane == "vol3d":
+            self.stack.setCurrentIndex(1)
+        else:
+            self.stack.setCurrentIndex(0)
+
     def set_volume(
         self,
         volume: MedicalVolume,
@@ -438,14 +483,6 @@ class SliceViewerWidget(QFrame):
         if pipeline is not None:
             self.transform_pipeline = pipeline
         self.vol3d_canvas.set_volume(volume)
-
-        ww, wl = volume.default_window_level()
-        self.slice_canvas.window_width = ww
-        self.slice_canvas.window_level = wl
-        self.slice_canvas.zoom = 1.0
-        self.slice_canvas.pan_offset = QPointF(0.0, 0.0)
-        self.slice_canvas.roi_bounds = None
-        self.roi_btn.setChecked(False)
 
         eff_plane = "axial" if self.plane == "vol3d" else self.plane
         n_slices = volume.num_slices(eff_plane)
@@ -457,6 +494,20 @@ class SliceViewerWidget(QFrame):
         self.slice_idx = mid
 
         raw_init = volume.get_slice(eff_plane, mid)
+        if eff_plane in ("rcc", "lcc", "rmlo", "lmlo") and raw_init.size > 0:
+            p2, p98 = np.percentile(raw_init[::4, ::4], [2.0, 98.5])
+            ww = float(max(1e-12, p98 - p2))
+            wl = float((p98 + p2) * 0.5)
+        else:
+            ww, wl = volume.default_window_level()
+
+        self.slice_canvas.window_width = ww
+        self.slice_canvas.window_level = wl
+        self.slice_canvas.zoom = 1.0
+        self.slice_canvas.pan_offset = QPointF(0.0, 0.0)
+        self.slice_canvas.roi_bounds = None
+        self.roi_btn.setChecked(False)
+
         h, w = raw_init.shape[:2]
         self.slice_canvas.cursor_yx = (h // 2, w // 2)
 

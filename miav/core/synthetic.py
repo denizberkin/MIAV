@@ -279,4 +279,12 @@ def create_synthetic_mammography_study() -> MedicalVolume:
         modality="MG",
         filepath="sample_data/mammography_mlo_2d.dcm",
         metadata_df=pl.DataFrame(rows),
+        study_mode="multi_mammo",
+        mammo_views={
+            "rmlo": img_2d,
+            "lmlo": np.ascontiguousarray(np.fliplr(img_2d)),
+            "rcc": np.ascontiguousarray(np.flipud(img_2d)),
+            "lcc": np.ascontiguousarray(np.fliplr(np.flipud(img_2d))),
+        },
+        primary_mammo_view="rmlo",
     )

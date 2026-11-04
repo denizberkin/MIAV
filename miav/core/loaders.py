@@ -373,6 +373,44 @@ def load_dicom_path(path: Path) -> MedicalVolume:
     ww = _parse_dicom_float(getattr(first_ds, "WindowWidth", None))
     default_window = (ww, wc) if (ww is not None and wc is not None and ww > 0) else None
 
+    mammo_views: dict[str, np.ndarray] = {}
+    primary_mammo_view = "rcc"
+    study_mode = ""
+    if modality_norm == "MG":
+        lat_first = str(getattr(first_ds, "ImageLaterality", "R")).strip().upper()
+        vp_first = str(getattr(first_ds, "ViewPosition", "CC")).strip().upper()
+        primary_key = f"{lat_first}{vp_first}".lower()
+        if primary_key in ("rcc", "lcc", "rmlo", "lmlo"):
+            primary_mammo_view = primary_key
+        mammo_views[primary_mammo_view] = slices[0]
+
+        # Collect all 4 mammography views (RCC, LCC, RMLO, LMLO) from datasets or sibling DICOMs in the same study
+        study_uid = getattr(first_ds, "StudyInstanceUID", None)
+        candidate_files = dcm_files if path.is_dir() else sorted([p for p in path.parent.glob("*.dcm") if p.is_file()])
+        for cand_f in candidate_files:
+            try:
+                cand_ds = pydicom.dcmread(str(cand_f), force=True)
+                if str(getattr(cand_ds, "Modality", "")).upper() != "MG":
+                    continue
+                if study_uid and getattr(cand_ds, "StudyInstanceUID", None) != study_uid:
+                    continue
+                lat_c = str(getattr(cand_ds, "ImageLaterality", "")).strip().upper()
+                vp_c = str(getattr(cand_ds, "ViewPosition", "")).strip().upper()
+                vkey = f"{lat_c}{vp_c}".lower()
+                if vkey in ("rcc", "lcc", "rmlo", "lmlo") and vkey not in mammo_views and hasattr(cand_ds, "pixel_array"):
+                    c_arr = cand_ds.pixel_array.astype(np.float32)
+                    if str(getattr(cand_ds, "PhotometricInterpretation", "")).upper() == "MONOCHROME1":
+                        c_arr = float(np.max(c_arr)) - c_arr
+                    c_slope = float(getattr(cand_ds, "RescaleSlope", 1.0))
+                    c_inter = float(getattr(cand_ds, "RescaleIntercept", 0.0))
+                    mammo_views[vkey] = c_arr * c_slope + c_inter
+            except Exception:
+                continue
+
+        # Keep volume as 2D (1, H, W) of the primary slice while storing all 4 views in mammo_views
+        vol = slices[0][np.newaxis, :, :]
+        study_mode = "multi_mammo" if len(mammo_views) > 1 else "single_mammo"
+
     # Extract rich DICOM tag metadata into Polars
     rows: list[dict[str, str]] = []
     dicom_tags = [
@@ -451,6 +489,9 @@ def load_dicom_path(path: Path) -> MedicalVolume:
         metadata_df=_build_meta_df(rows),
         external_csv_df=ext_csv_df,
         default_window=default_window,
+        study_mode=study_mode,
+        mammo_views=mammo_views,
+        primary_mammo_view=primary_mammo_view,
     )
 
 
@@ -491,7 +532,7 @@ def load_generic_image_or_array(path: Path) -> MedicalVolume:
     )
 
 
-def load_medical_path(path: str | Path) -> MedicalVolume:
+def load_medical_path(path: str | Path, study_mode: Optional[str] = None) -> MedicalVolume:
     """
     Universal dispatcher: detects NIfTI, FastMRI HDF5, DICOM file/directory,
     or 2D/NumPy image and returns a standardized `MedicalVolume`.
@@ -501,16 +542,21 @@ def load_medical_path(path: str | Path) -> MedicalVolume:
         raise FileNotFoundError(f"Path does not exist: {p}")
 
     if p.is_dir():
-        return load_dicom_path(p)
+        vol = load_dicom_path(p)
+    else:
+        name_lower = p.name.lower()
+        if name_lower.endswith(".nii") or name_lower.endswith(".nii.gz"):
+            vol = load_nifti(p)
+        elif name_lower.endswith(".h5") or name_lower.endswith(".hdf5"):
+            vol = load_fastmri_h5(p)
+        elif name_lower.endswith((".dcm", ".dicom", ".ima")):
+            vol = load_dicom_path(p)
+        else:
+            vol = load_generic_image_or_array(p)
 
-    name_lower = p.name.lower()
-    if name_lower.endswith(".nii") or name_lower.endswith(".nii.gz"):
-        return load_nifti(p)
-    if name_lower.endswith(".h5") or name_lower.endswith(".hdf5"):
-        return load_fastmri_h5(p)
-    if name_lower.endswith((".dcm", ".dicom", ".ima")):
-        return load_dicom_path(p)
-    return load_generic_image_or_array(p)
+    if study_mode and study_mode != "auto":
+        vol.study_mode = study_mode
+    return vol
 
 
 def attach_external_csv(volume: MedicalVolume, csv_path: str | Path) -> pl.DataFrame:

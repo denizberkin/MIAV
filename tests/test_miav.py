@@ -213,11 +213,56 @@ def test_end_to_end() -> None:
     # Switching loaded image must auto-clear all persistent pen strokes
     win.open_path(nifti_path)
     assert len(overlay.pen_strokes) == 0
+    assert win.active_volume.study_mode == "mri_3d"
+    assert win.modality_mode_combo.currentData() == "mri_3d"
 
-    # Opening 2D Mammography DICOM focuses 2D Axial view automatically
+    # 9. Test 3D Volume Modes: Sliced Volume (0->p for Axial, N->p for Sagittal/Coronal), Whole Volume, Ortho Slices
+    assert win.viewer_3d.canvas.render_mode == "sliced_volume"
+    for target_vw, expected_plane in (
+        (win.viewer_axial, "axial"),
+        (win.viewer_sagittal, "sagittal"),
+        (win.viewer_coronal, "coronal"),
+    ):
+        win._select_active_viewer(target_vw, trigger_analytics=True)
+        assert win.viewer_3d.canvas.active_cut_plane == expected_plane
+        pm_cut = win.viewer_3d.canvas._render_3d_buffer(240, 200)
+        assert pm_cut.width() == 240 and pm_cut.height() == 200
+
+    for mode_idx, mode_key in enumerate(["sliced_volume", "whole_volume", "ortho_planes"]):
+        win.viewer_3d.mode_combo.setCurrentIndex(mode_idx)
+        assert win.viewer_3d.canvas.render_mode == mode_key
+        pm_scene = win.viewer_3d.canvas._render_3d_buffer(240, 200)
+        assert pm_scene.width() == 240 and pm_scene.height() == 200
+
+    # 10. Test Mammography Multi-View (RMLO, LMLO, RCC, LCC in Quad Layout, no 3D view) & Single-View / 2D Modes
     win.open_path(mammo_path)
-    assert not win.active_volume.is_3d and win.active_volume.modality == "MG"
-    assert win.viewer_axial.isVisible() and not win.viewer_sagittal.isVisible()
+    assert win.active_volume.modality == "MG"
+    assert win.active_volume.study_mode == "multi_mammo"
+    assert set(win.active_volume.mammo_views.keys()) == {"rmlo", "lmlo", "rcc", "lcc"}
+    assert win.modality_mode_combo.currentData() == "multi_mammo"
+    assert not win.viewer_3d.isVisible()
+    assert (
+        win.viewer_axial.isVisible()
+        and win.viewer_sagittal.isVisible()
+        and win.viewer_coronal.isVisible()
+        and win.viewer_mammo_4.isVisible()
+    )
+    assert (
+        win.viewer_axial.plane == "rmlo"
+        and win.viewer_sagittal.plane == "lmlo"
+        and win.viewer_coronal.plane == "rcc"
+        and win.viewer_mammo_4.plane == "lcc"
+    )
+    combo_planes = [win.viewer_axial.plane_combo.itemData(i) for i in range(win.viewer_axial.plane_combo.count())]
+    assert combo_planes == ["rcc", "lcc", "rmlo", "lmlo"]
+
+    # Switch mode dropdown to 2D Single View ("mri_2d")
+    idx_2d = win.modality_mode_combo.findData("mri_2d")
+    win.modality_mode_combo.setCurrentIndex(idx_2d)
+    assert win.active_volume.study_mode == "mri_2d"
+    assert win.viewer_axial.plane == "single"
+    assert [win.viewer_axial.plane_combo.itemData(i) for i in range(win.viewer_axial.plane_combo.count())] == ["single"]
+    assert win.viewer_axial.isVisible() and not win.viewer_sagittal.isVisible() and not win.viewer_3d.isVisible()
 
     win.close()
     print("ALL UPDATED END-TO-END TESTS PASSED SUCCESSFULLY!")

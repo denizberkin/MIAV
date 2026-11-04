@@ -95,11 +95,13 @@ def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
         urllib.request.urlretrieve(FASTMRI_KNEE_H5_URL, str(fastmri_path))
 
     # 2. Real VinDr-Mammo Digital Mammography DICOMs (.dcm) + Clinical Annotations CSV (.csv)
-    cc_path = root / "vindr_mammo_r_cc.dcm"
-    mlo_path = root / "vindr_mammo_r_mlo.dcm"
+    r_cc_path = root / "vindr_mammo_r_cc.dcm"
+    r_mlo_path = root / "vindr_mammo_r_mlo.dcm"
+    l_cc_path = root / "vindr_mammo_l_cc.dcm"
+    l_mlo_path = root / "vindr_mammo_l_mlo.dcm"
     csv_path = root / "vindr_mammo_annotations.csv"
-    if not (cc_path.exists() and mlo_path.exists() and csv_path.exists()):
-        print("[sample_data] Extracting real VinDr-Mammo BI-RADS 4 Mass DICOMs & CSV via HTTP Range ...")
+    if not (r_cc_path.exists() and r_mlo_path.exists() and l_cc_path.exists() and l_mlo_path.exists() and csv_path.exists()):
+        print("[sample_data] Extracting real VinDr-Mammo 4-View (RCC/RMLO/LCC/LMLO) DICOMs & CSV via HTTP Range ...")
         buffered = io.BufferedReader(_HttpRangeFile(VINDR_MAMMO_ZIP_URL), buffer_size=262144)
         with zipfile.ZipFile(buffered) as zf:
             prefix = (
@@ -115,11 +117,10 @@ def generate_all_samples(output_dir: str | Path = "sample_data") -> Path:
                 lat = str(row["laterality"]).lower()
                 view = str(row["view_position"]).lower()
                 img_id = str(row["image_id"])
-                if lat == "r":
-                    target_dcm = root / f"vindr_mammo_{lat}_{view}.dcm"
-                    if not target_dcm.exists():
-                        raw_dcm = zf.read(f"{prefix}/images/{study_id}/{img_id}.dicom")
-                        target_dcm.write_bytes(raw_dcm)
+                target_dcm = root / f"vindr_mammo_{lat}_{view}.dcm"
+                if not target_dcm.exists():
+                    raw_dcm = zf.read(f"{prefix}/images/{study_id}/{img_id}.dicom")
+                    target_dcm.write_bytes(raw_dcm)
 
     # 3. Real 3D Human Brain T1w MRI NIfTI (.nii.gz)
     nifti_path = root / "brain_t1w_real.nii.gz"
