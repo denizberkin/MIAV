@@ -1136,6 +1136,7 @@ class MiavMainWindow(QMainWindow):
         companion.set_plane(eff_plane)
         companion.set_slice_and_cursor_silent(src_vw.slice_idx, src_vw.slice_canvas.cursor_yx)
         companion.set_view_plugin("segmentation_mask")
+        self._select_active_viewer(src_vw, trigger_analytics=False)
         self.status_bar.showMessage(
             f"Showing standalone Segmentation Mask in companion viewport ({eff_plane.upper()} #{src_vw.slice_idx + 1})."
         )

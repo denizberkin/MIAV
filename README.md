@@ -6,6 +6,8 @@
 
 **Medical Imaging, Analysis & Visualization**
 
+<img src="assets/miav-demo.gif" alt="MIAV Workstation Demo GIF" width="960">
+
 </div>
 
 **Medical image visualization with real time analytics, transforms from python and a 3d volume renderer.**
@@ -19,24 +21,42 @@ You can add:
 - own analytics (matplotlib, scikit-image, etc.)
 - metadata csv
 - own image transforms (albumentations, opencv, scipy, etc.)
+- own modular views & segmentation mask overlays (`@view_plugin`)
 
-Need to write your own analytics and transforms **in python** :'(, refer to examples in `plugins/analytics` and **[writing custom plugins below](#writing-custom-python-analytics--transform-plugins)**. You can also use the built-in transforms and analytics.
+Need to write your own analytics, transforms, and views **in python** :'(, refer to examples in `plugins/analytics`, `plugins/transforms`, and `plugins/views` and **[writing custom plugins below](#writing-custom-python-analytics-transform--view-plugins)**. You can also use the built-in views, transforms, and analytics.
 
+---
 
+## UI Overview
+
+### 1. 3D MRI / Volume Mode (`Quad MPR + 3D Sliced Volume`)
+![MIAV 3D Brain MRI Workstation](assets/ui-mri-3d.png)
+
+### 2. Multi-View Digital Mammography (`RMLO`, `LMLO`, `RCC`, `LCC`)
+![MIAV 4-View Digital Mammography](assets/ui-mammo-quad.png)
+
+### 3. Segmentation Mask Views & Alpha Blending (`(1 - ρ)·Image + ρ·Mask`)
+![MIAV Segmentation Mask & Alpha Overlay](assets/ui-segmentation-mask.png)
+
+---
 
 Below is some ai text to help you get it working. Hopefully it will be easier to understand than my explanation of it.
 
 ## Key Features
 
-- **Unified 2D & 3D Medical Image Support**:
-  - **NIfTI** (`.nii`, `.nii.gz`) via `nibabel`
-  - **FastMRI HDF5** (`.h5`, `.hdf5` — loads `reconstruction_rss`, `reconstruction_esc`, or automatically reconstructs from single-coil/multi-coil `kspace` via centered 2D IFFT + RSS, plus parses `ismrmrd_header` XML)
-  - **DICOM** (`.dcm` single files or 3D series directories via `pydicom`, with automatic Hounsfield Unit rescaling and DICOM tag extraction)
-  - **Standard 2D / NumPy Formats** (`.npy`, `.npz`, `.png`, `.tif`, `.tiff`, `.jpg`)
-- **Interchangeable 2D Multi-Planar (MPR) & 3D Views**:
-  - Switch any viewport seamlessly between **Axial (`1`)**, **Sagittal (`2`)**, **Coronal (`3`)**, and **3D Volume (`4`)**.
-  - **3D Volume Viewer** supports **3D Volumetric Raycasting / MIP** (`MRI Translucent`, `MIP`, `CT Bone`) and **3D Intersecting Orthogonal Slice Planes**.
-  - **Divided Screen Layouts** (`Space` to cycle): Dual (2D + 3D) + Analytics, Quad MPR (Axial/Sagittal/Coronal/3D) + Analytics, or Focused Single View + Analytics.
+- **Input Modality Auto-Detection & Selector (`3D MRI`, `2D MRI`, `Single-View Mammo`, `Multi-View Mammo`)**:
+  - Automatically detects the modality/view mode on load (or lets you override it from the top `Mode:` dropdown).
+  - **3D MRI / CT Volume (`mri_3d`)**: View selector offers `Axial`, `Sagittal`, `Coronal`, and `3D View`.
+  - **Mammography (`single_mammo` / `multi_mammo`)**: No 3D view; the Quad layout displays all 4 mammography views (**`RMLO`**, **`LMLO`**, **`RCC`**, **`LCC`**), and each viewport's view selector offers `RCC`, `LCC`, `RMLO`, `LMLO`.
+  - **2D MRI / Other 2D Images (`mri_2d`)**: Focused `Single View`.
+- **3D Volume Viewer Modes (`Sliced Volume`, `Whole Volume`, `Ortho Slices`)**:
+  - **`Sliced Volume`**: Dynamically cuts the 3D volume open along whichever 2D view (`Axial`, `Sagittal`, or `Coronal`) is currently selected for analytics at slice `p` out of `N` (`0 → p` for Axial with slice `p` on top; `N → p` for Sagittal and Coronal facing the viewer).
+  - **`Whole Volume`**: Full 3D volumetric rendering (`Translucent`, `MIP`, `Bone`).
+  - **`Ortho Slices`**: 3D intersecting orthogonal slice planes.
+- **Segmentation Masks & Modular Views (`@view_plugin`)**:
+  - **Show as Another View**: Display the standalone `Segmentation Mask` in a companion viewport synchronized to the active slice.
+  - **Alpha Overlay (`(1 - ρ)·Image + ρ·Mask`)**: Combines the original slice and segmentation mask strictly where `mask == 1` (`mask > 0`), controlled by a real-time $\rho$ (`Alpha`) slider (`0.00` – `1.00`) and color selector (`Emerald`, `Red`, `Cyan`, `Yellow`, `Grayscale`).
+  - **Modular Python Views**: Write custom `@view_plugin` scripts in Python to visualize custom dataset overlays, masks, contours, or bounding boxes.
 - **Real-Time Drag-and-Drop Python Analytics (`@analytics_plugin`)**:
   - Drag any Python analytics module from the left sidebar and drop it onto **Analytics Slot A, B, or C**.
   - Plots update in real time (`~60 Hz` conflated) as you scroll 3D slices, move crosshairs, draw a 2D ROI box, or tune image transforms.
@@ -92,6 +112,7 @@ python main.py sample_data/fastmri_knee_singlecoil.h5
 | `P` | Activate **Pen** mode (supports **Freehand**, **Line**, and **Rectangle** via dropdown) |
 | `Z` or `Ctrl + Z` | **Undo** the last drawn Pen annotation |
 | `C` | Clear all persistent pen drawings |
+| `O` | Toggle **Mask Alpha Overlay** (`(1 - ρ)·Image + ρ·Mask` where `Mask = 1`) on active viewport |
 | `[` / `]` / `M` | Toggle **Left Panel (`[`)**, **Right Analytics Panel (`]`)**, or **Metadata Panel (`M`)** |
 | `R` | Reset Window/Level, zoom/pan, and 3D camera |
 | `Right-Click + Drag` | Adjust **Window Width** (horizontal) and **Window Level** (vertical) |
@@ -100,9 +121,9 @@ python main.py sample_data/fastmri_knee_singlecoil.h5
 
 ---
 
-## Writing Custom Python Analytics & Transform Plugins
+## Writing Custom Python Analytics, Transform & View Plugins
 
-Drop any `.py` script into `plugins/analytics/` or `plugins/transforms/` (or load it at runtime via **📂 Import .py Plugin...** in the sidebar).
+Drop any `.py` script into `plugins/analytics/`, `plugins/transforms/`, or `plugins/views/` (or load it at runtime via **Import .py...** in the sidebar).
 
 ### 1. Custom Analytics Plugin (`@analytics_plugin`)
 ```python
@@ -141,4 +162,24 @@ def my_solarize(image: np.ndarray, threshold: int = 128, alpha: float = 1.0) -> 
     aug = A.Solarize(threshold=(int(threshold), int(threshold)), p=1.0)
     out = restore_from_uint8(aug(image=u8)["image"], vmin, vmax)
     return (1.0 - alpha) * image + alpha * out
+```
+
+### 3. Custom Modular View / Segmentation Overlay Plugin (`@view_plugin`)
+```python
+import numpy as np
+from miav.plugin_sdk import ViewContext, view_plugin
+
+@view_plugin(
+    name="Custom Dataset Mask Blend",
+    category="Custom View",
+    description="Blends (1 - rho) * image + rho * mask only where mask == 1.",
+)
+def my_custom_view(ctx: ViewContext) -> np.ndarray:
+    # Return either a 2D float32 array (H, W) or an RGB uint8 array (H, W, 3)
+    mask = (ctx.mask_2d > 0.5) if ctx.mask_2d is not None else np.zeros_like(ctx.image_2d, dtype=bool)
+    return np.where(
+        mask,
+        (1.0 - ctx.rho) * ctx.image_2d + ctx.rho * float(ctx.image_2d.max()),
+        ctx.image_2d,
+    ).astype(np.float32)
 ```
