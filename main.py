@@ -1,5 +1,5 @@
 """
-MIAV — Medical Image Analytics & Viewer Entry Point.
+MIAV — Medical Imaging, Analysis & Visualization Entry Point.
 Run on Windows 11 or Ubuntu Linux via:
     python main.py [optional_file_or_dicom_folder_path]
 """
@@ -19,7 +19,7 @@ from miav.ui.qt_compat import QApplication
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="MIAV — Medical Image Analytics & Viewer (2D/3D MRI, CT, FastMRI & Real-Time Python Analytics)"
+        description="MIAV — Medical Imaging, Analysis & Visualization (2D/3D MRI, CT, FastMRI & Real-Time Python Analytics)"
     )
     parser.add_argument(
         "path",

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "miav"
 version = "0.1.0"
-description = "MIAV — Medical Image Analytics & Viewer (2D/3D MRI, CT, X-Ray, FastMRI) with Real-Time Modular Python Analytics and Albumentations Transform Pipeline"
+description = "MIAV — Medical Imaging, Analysis & Visualization (2D/3D MRI, CT, X-Ray, FastMRI) with Real-Time Modular Python Analytics and Albumentations Transform Pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

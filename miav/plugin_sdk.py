@@ -1,5 +1,5 @@
 """
-Public Plugin SDK for MIAV (Medical Image Analytics & Viewer).
+Public Plugin SDK for MIAV (Medical Imaging, Analysis & Visualization).
 
 Users can write modular Python analytics functions (`@analytics_plugin`)
 and live image/volume transformations (`@transform_plugin`) using standard

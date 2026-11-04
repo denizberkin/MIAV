@@ -1,4 +1,4 @@
-# MIAV — Medical Image Analytics & Viewer
+# MIAV — Medical Imaging, Analysis & Visualization
 
 **Medical image viewer with real time analytics, transforms from python and a 3d volume renderer.**
 

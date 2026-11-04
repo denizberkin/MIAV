@@ -1,5 +1,5 @@
 """
-End-to-End Automated Test Suite for MIAV (Medical Image Analytics & Viewer).
+End-to-End Automated Test Suite for MIAV (Medical Imaging, Analysis & Visualization).
 Tests NIfTI / FastMRI HDF5+CSV / DICOM 3D loaders, Polars metadata filtering,
 all `@analytics_plugin` modules, all Albumentations `@transform_plugin` modules,
 dynamic `.py` script importing, 3-plane crosshair synchronization, active-view

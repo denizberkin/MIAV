@@ -1,5 +1,5 @@
 """
-Main Workstation Window for MIAV (Medical Image Analytics & Viewer).
+Main Workstation Window for MIAV (Medical Imaging, Analysis & Visualization).
 Coordinates 2D MPR Viewports, 3D Volumetric/Orthogonal Viewers,
 Drag-and-Drop Python Analytics Dock Slots, Live Albumentations Transform Pipeline,
 Presentation Annotation Modes (Cursor / Laser / Pen with Freehand, Line, Rectangle),
@@ -56,7 +56,7 @@ class MiavMainWindow(QMainWindow):
 
     def __init__(self, initial_path: Optional[str] = None) -> None:
         super().__init__()
-        self.setWindowTitle("MIAV — Medical Image Analytics & Viewer")
+        self.setWindowTitle("MIAV — Medical Imaging, Analysis & Visualization")
         self.resize(1540, 920)
         self.setStyleSheet(DARK_RADIOLOGY_QSS)
 
