@@ -11,3 +11,6 @@ dist/
 sample_data/
 .DS_Store
 Thumbs.db
+project_reports/
+# Course project reports (not pushed)
+project_reports/
