@@ -12,6 +12,10 @@ QMainWindow, QWidget {
     font-size: 12px;
 }
 
+QLabel, QCheckBox {
+    background-color: transparent;
+}
+
 QToolTip {
     background-color: #27272e;
     color: #f4f4f5;
@@ -74,6 +78,57 @@ QPushButton#PenBtn:checked {
     background-color: #d97706;
     border-color: #f59e0b;
     color: #ffffff;
+}
+
+QPushButton#ViewportTabBtn {
+    background-color: transparent;
+    color: #a1a1aa;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 3px 6px;
+    min-width: 0px;
+    font-weight: 500;
+}
+
+QPushButton#ViewportTabBtn:hover {
+    background-color: #24242b;
+    color: #f4f4f5;
+}
+
+QPushButton#ViewportTabBtn:checked {
+    background-color: #1e2e1e;
+    color: #86efac;
+    border: 1px solid #22c55e;
+    font-weight: 600;
+}
+
+QPushButton#CutPerspectiveBtn {
+    background-color: #202028;
+    color: #d4d4d8;
+    border: 1px solid #34343e;
+    border-radius: 5px;
+    padding: 4px 10px;
+    font-weight: 500;
+}
+
+QPushButton#CutPerspectiveBtn:checked {
+    background-color: #1e293b;
+    color: #60a5fa;
+    border: 1px solid #3b82f6;
+    font-weight: 600;
+}
+
+QSlider#OverlayTopSlider::sub-page:horizontal {
+    background: #22c55e;
+    border-radius: 2px;
+}
+
+QSlider#OverlayTopSlider::handle:horizontal {
+    background: #86efac;
+    border: 1px solid #16a34a;
+    width: 12px;
+    margin: -4px 0;
+    border-radius: 6px;
 }
 
 QPushButton#RemoveStepBtn {
@@ -185,5 +240,56 @@ QSplitter::handle {
 
 QSplitter::handle:hover {
     background-color: #3b82f6;
+}
+
+QFrame#ModalityCard {
+    background-color: #1c1c22;
+    border: 1px solid #2e2e38;
+    border-radius: 10px;
+}
+
+QFrame#ModalityCard:hover {
+    background-color: #212129;
+    border: 1px solid #3b82f6;
+}
+
+QPushButton#ModalityLaunchPrimaryBtn {
+    background-color: #16a34a;
+    color: #ffffff;
+    border: 1px solid #22c55e;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+QPushButton#ModalityLaunchPrimaryBtn:hover {
+    background-color: #15803d;
+    border-color: #4ade80;
+}
+
+QPushButton#BackToModalityBtn {
+    background-color: #202028;
+    color: #a1a1aa;
+    border: 1px solid #32323e;
+    border-radius: 5px;
+    padding: 4px 9px;
+    font-weight: 600;
+}
+
+QPushButton#BackToModalityBtn:hover {
+    background-color: #272732;
+    color: #f4f4f5;
+    border-color: #3b82f6;
+}
+
+QLabel#ModalityBadge {
+    background-color: #1e293b;
+    color: #93c5fd;
+    border: 1px solid #3b82f6;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-weight: 700;
+    font-size: 11px;
 }
 """
