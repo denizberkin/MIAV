@@ -29,13 +29,16 @@ Need to write your own analytics, transforms, and views **in python** :'(, refer
 
 ## UI Overview
 
-### 1. 3D MRI / Volume Mode (`Quad MPR + 3D Sliced Volume`)
+### 1. Modality Selection Launcher (`MRI`, `CT`, `X-RAY`)
+![MIAV Modality Launcher](assets/ui-launcher.png)
+
+### 2. 3D MRI Workspace (`3-Plane MPR + 3D Cut-Perspective & Terminal Log`)
 ![MIAV 3D Brain MRI Workstation](assets/ui-mri-3d.png)
 
-### 2. Multi-View Digital Mammography (`RMLO`, `LMLO`, `RCC`, `LCC`)
+### 3. X-Ray (Mammo) Workspace (`4-View Screening: RMLO, LMLO, RCC, LCC`)
 ![MIAV 4-View Digital Mammography](assets/ui-mammo-quad.png)
 
-### 3. Segmentation Mask Views & Alpha Blending (`(1 - ρ)·Image + ρ·Mask`)
+### 4. Segmentation Mask Views & Top-Bar Alpha Blending (`(1 - ρ)·Image + ρ·Mask`)
 ![MIAV Segmentation Mask & Alpha Overlay](assets/ui-segmentation-mask.png)
 
 ---
@@ -44,29 +47,27 @@ Below is some ai text to help you get it working. Hopefully it will be easier to
 
 ## Key Features
 
-- **Input Modality Auto-Detection & Selector (`3D MRI`, `2D MRI`, `Single-View Mammo`, `Multi-View Mammo`)**:
-  - Automatically detects the modality/view mode on load (or lets you override it from the top `Mode:` dropdown).
-  - **3D MRI / CT Volume (`mri_3d`)**: View selector offers `Axial`, `Sagittal`, `Coronal`, and `3D View`.
-  - **Mammography (`single_mammo` / `multi_mammo`)**: No 3D view; the Quad layout displays all 4 mammography views (**`RMLO`**, **`LMLO`**, **`RCC`**, **`LCC`**), and each viewport's view selector offers `RCC`, `LCC`, `RMLO`, `LMLO`.
-  - **2D MRI / Other 2D Images (`mri_2d`)**: Focused `Single View`.
-- **3D Volume Viewer Modes (`Sliced Volume`, `Whole Volume`, `Ortho Slices`)**:
-  - **`Sliced Volume`**: Dynamically cuts the 3D volume open along whichever 2D view (`Axial`, `Sagittal`, or `Coronal`) is currently selected for analytics at slice `p` out of `N` (`0 → p` for Axial with slice `p` on top; `N → p` for Sagittal and Coronal facing the viewer).
-  - **`Whole Volume`**: Full 3D volumetric rendering (`Translucent`, `MIP`, `Bone`).
+- **Modality-Tailored Workspaces (`MRI`, `CT`, `X-RAY`)**:
+  - Launch directly into a dedicated workspace for **MRI**, **CT (Hounsfield Units)**, or **X-Ray (Digital Mammography)** from realistic clinical preview cards, removing unrelated toolbar and viewport clutter.
+  - **Top Viewport Bar**: Switch cleanly between **`3-Plane`**, **`Axial`**, **`Coronal`**, **`Sagittal`**, and **`3D`** in 3D MRI/CT mode, or **`4-View`**, **`2V CC`** (`RCC` | `LCC`), **`2V MLO`** (`RMLO` | `LMLO`), **`2V R`** (`RMLO` | `RCC`), **`2V L`** (`LMLO` | `LCC`), and single views (**`RMLO`**, **`RCC`**, **`LMLO`**, **`LCC`**) in 2D X-Ray/Mammo mode (with 3D red crosshair lines hidden on 2D radiographs). Also includes **`3D Cut-Perspective`**, **`ROI`**, **`Center`** (`F`), **`Sliders`**, and the dynamic **`Overlay`** alpha slider.
+- **3D Volume Viewer (`3D Cut-Perspective`, Surface-Shaded `Whole Volume`, `Ortho Slices` & Orientation Cube)**:
+  - **`3D Cut-Perspective` (`Sliced Volume`)**: Dynamically cuts the 3D brain/organ volume open along whichever 2D view (`Axial`, `Sagittal`, or `Coronal`) is currently selected for analytics, with a live **`(C)oronal` / `(S)agittal` / `(A)xial`** orientation cube in the corner.
+  - **`Whole Volume`**: 3D volumetric raycaster with 3D gradient surface normals, Phong/Lambertian lighting, and ray-jitter dithering (`Translucent`, `MIP`, `CT Bone`).
   - **`Ortho Slices`**: 3D intersecting orthogonal slice planes.
 - **Segmentation Masks & Modular Views (`@view_plugin`)**:
   - **Show as Another View**: Display the standalone `Segmentation Mask` in a companion viewport synchronized to the active slice.
-  - **Alpha Overlay (`(1 - ρ)·Image + ρ·Mask`)**: Combines the original slice and segmentation mask strictly where `mask == 1` (`mask > 0`), controlled by a real-time $\rho$ (`Alpha`) slider (`0.00` – `1.00`) and color selector (`Emerald`, `Red`, `Cyan`, `Yellow`, `Grayscale`).
+  - **Top-Bar Alpha Overlay (`(1 - ρ)·Image + ρ·Mask`)**: Combines the original slice and segmentation mask strictly where `mask == 1` (`mask > 0`), controlled by a live top-bar `Overlay` slider (`0%` – `100%`) and color selector (`Emerald`, `Red`, `Cyan`, `Yellow`, `Grayscale`).
   - **Modular Python Views**: Write custom `@view_plugin` scripts in Python to visualize custom dataset overlays, masks, contours, or bounding boxes.
-- **Real-Time Drag-and-Drop Python Analytics (`@analytics_plugin`)**:
+- **Real-Time Drag-and-Drop Python Analytics (`@analytics_plugin`) & 2D ROI Subpart Analysis**:
   - Drag any Python analytics module from the left sidebar and drop it onto **Analytics Slot A, B, or C**.
-  - Plots update in real time (`~60 Hz` conflated) as you scroll 3D slices, move crosshairs, draw a 2D ROI box, or tune image transforms.
+  - Toggle **`ROI`** in the top viewport bar and drag a rectangle on any 2D slice to focus analytics (histograms, Otsu/multi-Otsu tissue segmentation, Canny/Frangi vesselness, etc.) on that exact 2D ROI subpart.
 - **Live Albumentations & Image Transform Pipeline (`@transform_plugin`)**:
   - Stack and tune deterministic **Albumentations**, **OpenCV**, **SciPy**, and **MRI Artifact** transformations (`CLAHE`, `Gamma`, `Brightness/Contrast`, `Equalize`, `Posterize/Invert`, `Zoom`, `Rotate`, `Flip/Transpose`, `Elastic Deformation`, `Gaussian/Median Blur`, `Sharpen/Unsharp Mask`, `Emboss`, `Gaussian/Rician Noise`, `MRI RF Bias Field`, `K-Space Gibbs Ringing`) with auto-generated interactive sliders and alpha blending.
 - **Presentation & Ephemeral Annotation Modes**:
   - **Laser Pointer Trail (`L`)**: Clicking and dragging draws a glowing red cursor trail that persists briefly and smoothly fades out over `~1.35 seconds`.
-  - **Persistent Freehand Pen (`P`)**: Draws annotations that remain across slice scrolling (**Screen-Pinned** by default, or toggle **Pin to Slice**), and automatically clear when you press **Clear (`C`)**, switch to another image/study, or close the app.
-- **Polars Tabular Metadata Inspector**:
-  - Real-time search and filtering over DICOM tags, NIfTI headers, FastMRI XML attributes, and external FastMRI/clinical `.csv` cohorts powered by `polars`.
+  - **Persistent Pen (`P`)**: Draws Freehand, Line, or Rectangle annotations that remain across slice scrolling (**Screen-Pinned** by default, or toggle **Pin**), with contextual Pen tools that appear only when Pen mode is active.
+- **Polars Metadata Inspector & Terminal Technical Log (`G`)**:
+  - Real-time search and filtering over DICOM tags, NIfTI headers, FastMRI XML attributes, and clinical `.csv` cohorts powered by `polars`, paired with a collapsible terminal-style **Technical Log** (`> image loaded: ...`) at the bottom.
 
 ---
 
@@ -95,28 +96,41 @@ python main.py
 python main.py sample_data/fastmri_knee_singlecoil.h5
 ```
 
+### 4. Run the Modular Test Suites
+```bash
+python tests/test_miav.py
+# Or run individual logical test suites:
+python tests/test_loaders_and_models.py
+python tests/test_plugins_and_transforms.py
+python tests/test_viewport_and_navigation.py
+python tests/test_workspaces_and_ui.py
+```
+
 ---
 
 ## Keyboard & Mouse Shortcuts
 
 | Shortcut / Action | Description |
 | :--- | :--- |
-| `Left-Click on Slice` | Selects view for analytics (blue border) and syncs the other 2 orthogonal slices to that 3D point |
-| `Mouse Wheel` | Scroll `+1 / -1` slice in hovered 2D or 3D viewport |
-| `Shift + Mouse Wheel` | Fast scroll `+10 / -10` slices |
-| `Up / Down` or `K / J` | Step `+1 / -1` slice on active viewport |
+| `Left-Click on Slice` | Selects view for analytics (blue border) and syncs the other 2 orthogonal slices to that 3D point (clicking in black letterbox margins selects the view without moving the crosshair) |
+| `Mouse Wheel (2D View)` | Scroll `+1 / -1` slice in the **hovered** 2D viewport (and syncs crosshairs on the other views) |
+| `Mouse Wheel (3D View)` | Zoom in / out in the 3D volume viewport |
+| `Shift + Mouse Wheel` | Fast scroll `+10 / -10` slices in the hovered 2D viewport |
+| `Arrow Keys (Up/Down/Left/Right)` | Move the 3D crosshair on the **selected** 2D viewport (updating orthogonal slices) |
 | `1`, `2`, `3`, `4` | Select **Axial (`1`)**, **Sagittal (`2`)**, **Coronal (`3`)**, or switch to **3D View (`4`)** |
-| `Space` | Cycle divided-screen layout (`Quad MPR + 3D` $\leftrightarrow$ `Dual` $\leftrightarrow$ `Single View`) |
+| `Space` | Cycle view tabs (`3-Plane` $\leftrightarrow$ `Axial` $\leftrightarrow$ `Coronal` $\leftrightarrow$ `Sagittal` $\leftrightarrow$ `3D`) |
 | `N` or `Esc` | Activate **Cursor** mode (crosshair navigation) |
 | `L` | Activate **Laser** mode (fading red presentation trail) |
-| `P` | Activate **Pen** mode (supports **Freehand**, **Line**, and **Rectangle** via dropdown) |
+| `P` | Activate **Pen** mode (shows **Freehand**, **Line**, **Rectangle**, **Pin**, **Undo**, and **Clear** controls) |
 | `Z` or `Ctrl + Z` | **Undo** the last drawn Pen annotation |
 | `C` | Clear all persistent pen drawings |
 | `O` | Toggle **Mask Alpha Overlay** (`(1 - ρ)·Image + ρ·Mask` where `Mask = 1`) on active viewport |
-| `[` / `]` / `M` | Toggle **Left Panel (`[`)**, **Right Analytics Panel (`]`)**, or **Metadata Panel (`M`)** |
+| `[` / `]` / `M` / `G` | Toggle **Left Panel (`[`)**, **Right Analytics Panel (`]`)**, **Metadata (`M`)**, or **Technical Log (`G`)** |
 | `R` | Reset Window/Level, zoom/pan, and 3D camera |
 | `Right-Click + Drag` | Adjust **Window Width** (horizontal) and **Window Level** (vertical) |
-| `Ctrl + Mouse Wheel` | Zoom in / out |
+| `Ctrl + Mouse Wheel` | Zoom in / out anchored at the current mouse cursor position |
+| `Ctrl + Left-Click + Drag` | Pan / move the zoomed image without changing the crosshair or active view |
+| `F`, `Home`, or `Ctrl + 0` | **Center** zoomed/panned image back into the viewport (without resetting Window/Level) |
 | `Middle-Click + Drag` | Pan slice |
 
 ---
