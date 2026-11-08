@@ -11,11 +11,15 @@ import polars as pl
 
 from miav.core.data_models import MedicalVolume
 from miav.ui.qt_compat import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -155,3 +159,84 @@ class MetadataInspectorPanel(QFrame):
         for r_idx, row in enumerate(rows):
             for c_idx, col_name in enumerate(cols):
                 self.cohort_table.setItem(r_idx, c_idx, QTableWidgetItem(str(row.get(col_name, ""))))
+
+
+class ActivityLogPanel(QFrame):
+    """
+    Concise bottom Technical/Activity Log panel located with Metadata.
+    Defaults to closed; when opened while Metadata is open, it pushes Metadata up and opens below it.
+    """
+
+    closeRequested = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CardPanel")
+        self.entries: list[str] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 5)
+        layout.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        title = QLabel("Technical Log")
+        title.setStyleSheet("font-weight: 600; color: #e4e4e7;")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setToolTip("Copy log entries to clipboard")
+        self.copy_btn.clicked.connect(self.copy_logs)
+        header.addWidget(self.copy_btn)
+
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setToolTip("Clear all log entries")
+        self.clear_btn.clicked.connect(self.clear_logs)
+        header.addWidget(self.clear_btn)
+
+        close_btn = QPushButton("—")
+        close_btn.setObjectName("RemoveStepBtn")
+        close_btn.setFixedWidth(26)
+        close_btn.setToolTip("Hide Technical Log panel (Shortcut: G)")
+        close_btn.clicked.connect(self.closeRequested.emit)
+        header.addWidget(close_btn)
+        layout.addLayout(header)
+
+        self.terminal_view = QPlainTextEdit(self)
+        self.terminal_view.setReadOnly(True)
+        self.terminal_view.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background-color: #0d0d11;"
+            "  color: #d4d4d8;"
+            "  border: 1px solid #24242c;"
+            "  border-radius: 4px;"
+            "  font-family: Consolas, 'Ubuntu Mono', monospace;"
+            "  font-size: 11px;"
+            "  padding: 5px 8px;"
+            "}"
+        )
+        layout.addWidget(self.terminal_view, 1)
+
+    def append_log(self, message: str) -> None:
+        for line in message.splitlines():
+            clean = line.strip()
+            if not clean:
+                continue
+            self.entries.append(clean)
+            self.terminal_view.appendPlainText(f"> {clean}")
+        sb = self.terminal_view.verticalScrollBar()
+        if sb is not None:
+            sb.setValue(sb.maximum())
+
+    def clear_logs(self) -> None:
+        self.entries.clear()
+        self.terminal_view.clear()
+
+    def get_log_text(self) -> str:
+        return "\n".join(self.entries)
+
+    def copy_logs(self) -> None:
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(self.get_log_text())

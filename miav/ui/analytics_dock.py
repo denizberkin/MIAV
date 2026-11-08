@@ -32,6 +32,7 @@ from matplotlib.figure import Figure
 import numpy as np
 
 from miav.plugin_sdk import REGISTRY, AnalysisContext
+from miav.ui.annotation_overlay import AnnotationOverlay
 
 MIME_ANALYTICS_PLUGIN = "application/x-miav-analytics-plugin"
 
@@ -180,6 +181,9 @@ class AnalyticsSlotWidget(QFrame):
         self.canvas = FigureCanvasQTAgg(self.figure)
         layout.addWidget(self.canvas, 1)
 
+        # Lightweight hardware-composited Laser / Pen overlay on top of the Matplotlib plot
+        self.annotation_overlay = AnnotationOverlay(self.canvas)
+
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(40)
@@ -187,11 +191,24 @@ class AnalyticsSlotWidget(QFrame):
 
         self.refresh_plugin_choices()
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.annotation_overlay.setGeometry(0, 0, self.canvas.width(), self.canvas.height())
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self.annotation_overlay.setGeometry(0, 0, self.canvas.width(), self.canvas.height())
         if self._dirty_when_hidden and self._pending_ctx is not None:
             self._dirty_when_hidden = False
             self._render_timer.start()
+
+    def set_annotation_mode(self, mode: str, pin_to_slice: bool = False, pen_shape: str = "freehand") -> None:
+        self.annotation_overlay.pin_to_slice = pin_to_slice
+        self.annotation_overlay.set_pen_shape(pen_shape)
+        self.annotation_overlay.set_mode(mode)
+
+    def clear_annotations(self) -> None:
+        self.annotation_overlay.clear_annotations()
 
     def refresh_plugin_choices(self) -> None:
         self.plugin_combo.blockSignals(True)
@@ -287,6 +304,9 @@ class AnalyticsSlotWidget(QFrame):
                 ax.set_title(spec.name, color="#e4e4e7", fontsize=8.5)
                 ax.axis("off")
 
+            self.annotation_overlay.set_slice_context(ctx.plane, ctx.slice_idx)
+            self.annotation_overlay.setGeometry(0, 0, self.canvas.width(), self.canvas.height())
+            self.annotation_overlay.raise_()
             self.canvas.draw_idle()
         except Exception as exc:
             self.figure.clear()
@@ -302,6 +322,9 @@ class AnalyticsSlotWidget(QFrame):
                 va="center",
                 family="monospace",
             )
+            self.annotation_overlay.set_slice_context(ctx.plane, ctx.slice_idx)
+            self.annotation_overlay.setGeometry(0, 0, self.canvas.width(), self.canvas.height())
+            self.annotation_overlay.raise_()
             self.canvas.draw_idle()
 
     def dragEnterEvent(self, event) -> None:
