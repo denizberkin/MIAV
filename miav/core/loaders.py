@@ -532,7 +532,11 @@ def load_generic_image_or_array(path: Path) -> MedicalVolume:
     )
 
 
-def load_medical_path(path: str | Path, study_mode: Optional[str] = None) -> MedicalVolume:
+def load_medical_path(
+    path: str | Path,
+    study_mode: Optional[str] = None,
+    is_ct_hu: bool = False,
+) -> MedicalVolume:
     """
     Universal dispatcher: detects NIfTI, FastMRI HDF5, DICOM file/directory,
     or 2D/NumPy image and returns a standardized `MedicalVolume`.
@@ -556,6 +560,8 @@ def load_medical_path(path: str | Path, study_mode: Optional[str] = None) -> Med
 
     if study_mode and study_mode != "auto":
         vol.study_mode = study_mode
+    if is_ct_hu:
+        vol.set_ct_hounsfield_mode(True)
     return vol
 
 

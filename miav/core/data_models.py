@@ -49,8 +49,14 @@ class MedicalVolume:
     mask_volume: Optional[np.ndarray] = None  # Optional 3D/2D segmentation mask (Z, Y, X) where > 0 is foreground
     mammo_masks: dict[str, np.ndarray] = field(default_factory=dict)  # Optional per-view 2D mammo masks
     mask_name: str = ""
+    is_ct_hu: bool = False  # True when input is CT / Hounsfield units
+    original_modality: str = ""
 
     def __post_init__(self) -> None:
+        if not self.original_modality:
+            self.original_modality = self.modality
+        if self.modality == "CT":
+            self.is_ct_hu = True
         if self.volume.ndim == 2:
             self.volume = self.volume[np.newaxis, :, :]
         elif self.volume.ndim > 3:
@@ -66,6 +72,63 @@ class MedicalVolume:
                 self.study_mode = "multi_mammo" if len(self.mammo_views) > 1 else "single_mammo"
             else:
                 self.study_mode = "mri_3d" if self.volume.shape[0] > 1 else "mri_2d"
+
+    @property
+    def has_explicit_mask(self) -> bool:
+        """Return True if an external segmentation mask volume or mammo mask is attached."""
+        return (self.mask_volume is not None) or bool(self.mammo_masks)
+
+    def set_ct_hounsfield_mode(self, enabled: bool) -> None:
+        """Toggle CT / Hounsfield units interpretation and visualization."""
+        self.is_ct_hu = bool(enabled)
+        if self.is_ct_hu:
+            self.modality = "CT"
+        else:
+            self.modality = self.original_modality if self.original_modality != "CT" else "MRI"
+
+    def concise_modality_summary(self) -> str:
+        """
+        Return a concise log line describing sequence/contrast and imaging type,
+        e.g. 't1w mri · 190×256×188' or 'hounsfield ct · 44×256×256'.
+        """
+        name_low = self.name.lower()
+        meta_text = ""
+        if self.metadata_df is not None and self.metadata_df.height > 0:
+            try:
+                vals = self.metadata_df["value"].to_list()
+                meta_text = " ".join(str(v).lower() for v in vals)
+            except Exception:
+                meta_text = ""
+        combined = f"{name_low} {meta_text}"
+
+        if self.is_ct_hu or self.modality == "CT":
+            img_type = "ct"
+            seq = "hounsfield"
+        elif self.is_mammography or self.modality == "MG":
+            img_type = "xray"
+            seq = "mammo"
+        elif self.modality == "XRAY":
+            img_type = "xray"
+            seq = "radiograph"
+        elif self.modality == "FASTMRI":
+            img_type = "mri"
+            seq = "pd" if "pd" in combined or "knee" in combined else "fastmri"
+        else:
+            img_type = "mri"
+            if "flair" in combined:
+                seq = "flair"
+            elif "t2" in combined:
+                seq = "t2w"
+            elif "dwi" in combined or "adc" in combined:
+                seq = "dwi"
+            elif "t1" in combined or "mprage" in combined or "spgr" in combined:
+                seq = "t1w"
+            else:
+                seq = "structural"
+
+        z, y, x = self.shape
+        dims = f"{z}×{y}×{x} voxels" if self.is_3d else f"{y}×{x} px"
+        return f"{seq} {img_type} · {dims}"
 
     @property
     def is_mammography(self) -> bool:
@@ -205,12 +268,22 @@ class MedicalVolume:
         return None
 
     def default_window_level(self) -> tuple[float, float]:
-        """Compute robust default (window_width, window_level) using DICOM header or 1st–99.5th percentiles."""
+        """Compute robust default (window_width, window_level) using DICOM header, CT HU range, or 1st–99.5th percentiles."""
         if self.default_window is not None:
             ww, wl = self.default_window
             if ww > 0:
                 return (float(ww), float(wl))
         sample = self.volume[:: max(1, self.volume.shape[0] // 16)]
+        if self.is_ct_hu:
+            s_min = float(np.min(sample))
+            s_max = float(np.max(sample))
+            if s_min <= -50.0 and s_max >= 40.0:
+                # Standard Hounsfield Units (air ~ -1000, brain/soft-tissue ~ 0..80)
+                return (80.0, 40.0)
+            p10, p95 = np.percentile(sample, [10.0, 95.0])
+            width = float(max(1e-12, (p95 - p10) * 0.65))
+            level = float((p95 + p10) * 0.5)
+            return (width, level)
         if self.modality == "MG":
             fg = sample[sample > 0]
             if fg.size > 100:
