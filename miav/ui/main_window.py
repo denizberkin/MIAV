@@ -24,7 +24,8 @@ from miav.core.synthetic import (
 from miav.core.transform_pipeline import TransformPipeline
 from miav.plugin_sdk import REGISTRY, AnalysisContext
 from miav.ui.analytics_dock import AnalyticsSlotWidget, DraggableAnalyticsListWidget
-from miav.ui.metadata_panel import MetadataInspectorPanel
+from miav.ui.launcher_page import ModalityLauncherPage
+from miav.ui.metadata_panel import ActivityLogPanel, MetadataInspectorPanel
 from miav.ui.qt_compat import (
     QCheckBox,
     QComboBox,
@@ -41,8 +42,10 @@ from miav.ui.qt_compat import (
     QMessageBox,
     QPushButton,
     QShortcut,
+    QSizePolicy,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTabWidget,
     Qt,
@@ -70,8 +73,12 @@ class MiavMainWindow(QMainWindow):
         self.transform_pipeline = TransformPipeline()
         self.studies: list[MedicalVolume] = self._load_default_studies()
         self.active_volume: MedicalVolume = self.studies[0]
+        self.active_imaging_type: str = "mri"  # "mri" | "ct" | "xray_mammo"
         self.active_roi_bounds: Optional[tuple[int, int, int, int]] = None
         self.layout_mode: str = "quad_mpr"  # Default to Quad MPR so Axial/Sagittal/Coronal sync is immediately visible
+        self.active_view_tab: str = "3plane"
+        self.viewport_tabs: dict[str, QPushButton] = {}
+        self.custom_viewport_widgets: dict[str, QWidget] = {}
         self.annotation_mode: str = "navigate"
         self.pen_shape: str = "freehand"
 
@@ -85,7 +92,8 @@ class MiavMainWindow(QMainWindow):
         if initial_path:
             self.open_path(initial_path)
         else:
-            self._load_study_into_views(self.active_volume)
+            self._load_study_into_views(self.active_volume, enter_workspace=False)
+            self.show_launcher_page()
 
     def _load_default_studies(self) -> list[MedicalVolume]:
         """Load real clinical sample datasets from `./sample_data/` if present, falling back to synthetic if offline."""
@@ -113,9 +121,20 @@ class MiavMainWindow(QMainWindow):
         ]
 
     def _build_ui(self) -> None:
-        central = QWidget(self)
-        self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
+        self.root_stack = QStackedWidget(self)
+        self.setCentralWidget(self.root_stack)
+
+        # Page 0: Modality Selection Landing Page (MRI / CT / X-Ray Mammo)
+        self.launcher_page = ModalityLauncherPage(self.root_stack, studies=self.studies)
+        self.launcher_page.modalitySelected.connect(self.select_imaging_type)
+        self.launcher_page.openFileForModality.connect(self._on_launcher_open_file)
+        self.launcher_page.openFolderForModality.connect(self._on_launcher_open_folder)
+        self.root_stack.addWidget(self.launcher_page)
+
+        # Page 1: Modality-Tailored Visual Analysis Workspace
+        self.workspace_page = QWidget(self.root_stack)
+        self.root_stack.addWidget(self.workspace_page)
+        root_layout = QVBoxLayout(self.workspace_page)
         root_layout.setContentsMargins(6, 6, 6, 6)
         root_layout.setSpacing(5)
 
@@ -124,48 +143,81 @@ class MiavMainWindow(QMainWindow):
         # =====================================================================
         toolbar = QFrame(self)
         toolbar.setObjectName("CardPanel")
+        toolbar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         tb_layout = QHBoxLayout(toolbar)
         tb_layout.setContentsMargins(8, 5, 8, 5)
-        tb_layout.setSpacing(6)
+        tb_layout.setSpacing(5)
+
+        self.back_to_launcher_btn = QPushButton("← Modality")
+        self.back_to_launcher_btn.setObjectName("BackToModalityBtn")
+        self.back_to_launcher_btn.setToolTip("Return to Imaging Modality selection screen (MRI / CT / X-Ray)")
+        self.back_to_launcher_btn.clicked.connect(self.show_launcher_page)
+        tb_layout.addWidget(self.back_to_launcher_btn)
+
+        self.modality_badge_lbl = QLabel("MRI")
+        self.modality_badge_lbl.setObjectName("ModalityBadge")
+        tb_layout.addWidget(self.modality_badge_lbl)
 
         open_file_btn = QPushButton("Open File...")
         open_file_btn.clicked.connect(self._on_open_file_dialog)
         tb_layout.addWidget(open_file_btn)
 
-        open_dir_btn = QPushButton("Open Folder...")
-        open_dir_btn.setToolTip("Open a 3D DICOM series directory")
-        open_dir_btn.clicked.connect(self._on_open_folder_dialog)
-        tb_layout.addWidget(open_dir_btn)
+        self.open_dir_btn = QPushButton("Open Folder...")
+        self.open_dir_btn.setToolTip("Open a 3D DICOM series or multi-view mammography directory")
+        self.open_dir_btn.clicked.connect(self._on_open_folder_dialog)
+        tb_layout.addWidget(self.open_dir_btn)
 
         self.study_combo = QComboBox()
-        self.study_combo.setMinimumWidth(200)
+        self.study_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.study_combo.setMinimumContentsLength(10)
+        self.study_combo.setMinimumWidth(130)
+        self.study_combo.setMaximumWidth(200)
         for st in self.studies:
             self.study_combo.addItem(st.name)
         self.study_combo.currentIndexChanged.connect(self._on_study_combo_changed)
         tb_layout.addWidget(self.study_combo)
 
-        tb_layout.addWidget(QLabel("Mode:"))
-        self.modality_mode_combo = QComboBox()
-        self.modality_mode_combo.setToolTip(
-            "Input modality / view mode (auto-detected on load, or switch manually)"
+        self.ct_hu_cb = QCheckBox("CT • HU")
+        self.ct_hu_cb.setToolTip(
+            "Input is CT • Hounsfield units: treats intensities as CT Hounsfield Units (HU) "
+            "and visualizes using CT windowing and 3D rendering."
         )
+        self.ct_hu_cb.toggled.connect(self._on_ct_hu_toggled)
+        tb_layout.addWidget(self.ct_hu_cb)
+
+        # Keep Mode combo hidden for programmatic compatibility (controlled via the viewport bar below)
+        self.mode_lbl = QLabel("Mode:", toolbar)
+        self.mode_lbl.setVisible(False)
+        self.modality_mode_combo = QComboBox(toolbar)
         self.modality_mode_combo.addItem("3D MRI / Volume", "mri_3d")
         self.modality_mode_combo.addItem("2D MRI / Single View", "mri_2d")
         self.modality_mode_combo.addItem("Single-View Mammo", "single_mammo")
         self.modality_mode_combo.addItem("Multi-View Mammo (4-View)", "multi_mammo")
         self.modality_mode_combo.currentIndexChanged.connect(self._on_modality_mode_changed)
-        tb_layout.addWidget(self.modality_mode_combo)
+        self.modality_mode_combo.setVisible(False)
 
-        tb_layout.addWidget(QLabel("Layout:"))
-        self.layout_combo = QComboBox()
+        self.mammo_csv_top_btn = QPushButton("Load CSV...")
+        self.mammo_csv_top_btn.setToolTip("Import clinical mammography / X-Ray bounding box & BI-RADS CSV")
+        self.mammo_csv_top_btn.clicked.connect(self._on_import_csv_dialog)
+        self.mammo_csv_top_btn.setVisible(False)
+        tb_layout.addWidget(self.mammo_csv_top_btn)
+
+        # Keep layout_combo hidden for programmatic compatibility while top viewport tabs handle view switching
+        self.layout_combo = QComboBox(toolbar)
         self.layout_combo.addItem("Quad MPR + 3D", "quad_mpr")
         self.layout_combo.addItem("Dual (2D + 3D)", "dual_split")
         self.layout_combo.addItem("Single View", "single_focus")
         self.layout_combo.currentIndexChanged.connect(self._on_layout_combo_changed)
-        tb_layout.addWidget(self.layout_combo)
+        self.layout_combo.setVisible(False)
 
-        tb_layout.addWidget(QLabel("WL:"))
+        wl_lbl = QLabel("WL:")
+        wl_lbl.setMinimumWidth(22)
+        tb_layout.addWidget(wl_lbl)
         self.wl_combo = QComboBox()
+        self.wl_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.wl_combo.setMinimumContentsLength(10)
+        self.wl_combo.setMinimumWidth(125)
+        self.wl_combo.setMaximumWidth(185)
         self.wl_combo.addItem("Auto (MRI)", "auto")
         self.wl_combo.addItem("CT Brain (80/40)", "ct_brain")
         self.wl_combo.addItem("CT Stroke (40/40)", "ct_stroke")
@@ -176,7 +228,7 @@ class MiavMainWindow(QMainWindow):
 
         tb_layout.addStretch(1)
 
-        # Presentation & Annotation Mode Controls: Cursor (N), Laser (L), Pen (P) + Shape Dropdown
+        # Presentation & Annotation Mode Controls: Cursor (N), Laser (L), Pen (P) + Pen sub-controls
         self.nav_mode_btn = QPushButton("Cursor (N)")
         self.nav_mode_btn.setCheckable(True)
         self.nav_mode_btn.setChecked(True)
@@ -198,37 +250,45 @@ class MiavMainWindow(QMainWindow):
         self.pen_mode_btn.clicked.connect(lambda: self.set_annotation_mode("pen"))
         tb_layout.addWidget(self.pen_mode_btn)
 
-        self.pen_shape_combo = QComboBox()
+        self.pen_tools_widget = QWidget(toolbar)
+        pt_layout = QHBoxLayout(self.pen_tools_widget)
+        pt_layout.setContentsMargins(0, 0, 0, 0)
+        pt_layout.setSpacing(4)
+
+        self.pen_shape_combo = QComboBox(self.pen_tools_widget)
         self.pen_shape_combo.setToolTip("Select Pen drawing shape (Freehand, Line, or Rectangle)")
         self.pen_shape_combo.addItem("Freehand", "freehand")
         self.pen_shape_combo.addItem("Line", "line")
         self.pen_shape_combo.addItem("Rectangle", "rectangle")
         self.pen_shape_combo.currentIndexChanged.connect(self._on_pen_shape_changed)
         self.pen_shape_combo.activated.connect(self._on_pen_shape_changed)
-        tb_layout.addWidget(self.pen_shape_combo)
+        pt_layout.addWidget(self.pen_shape_combo)
 
-        self.pin_slice_cb = QCheckBox("Pin Slice")
+        self.pin_slice_cb = QCheckBox("Pin", self.pen_tools_widget)
         self.pin_slice_cb.setToolTip(
             "Unchecked: Drawings remain visible on screen across slices.\n"
             "Checked: Drawings only show on the exact slice where they were drawn."
         )
         self.pin_slice_cb.toggled.connect(self._on_pin_slice_toggled)
-        tb_layout.addWidget(self.pin_slice_cb)
+        pt_layout.addWidget(self.pin_slice_cb)
 
-        undo_ink_btn = QPushButton("Undo (Z)")
+        undo_ink_btn = QPushButton("Undo", self.pen_tools_widget)
         undo_ink_btn.setToolTip("Undo last Pen drawing (Shortcut: Z or Ctrl+Z)")
         undo_ink_btn.clicked.connect(self.undo_last_pen_annotation)
-        tb_layout.addWidget(undo_ink_btn)
+        pt_layout.addWidget(undo_ink_btn)
 
-        clear_ink_btn = QPushButton("Clear (C)")
+        clear_ink_btn = QPushButton("Clear", self.pen_tools_widget)
         clear_ink_btn.setToolTip("Clear all persistent pen drawings (Shortcut: C)")
         clear_ink_btn.clicked.connect(self.clear_all_annotations)
-        tb_layout.addWidget(clear_ink_btn)
+        pt_layout.addWidget(clear_ink_btn)
+
+        self.pen_tools_widget.setVisible(False)
+        tb_layout.addWidget(self.pen_tools_widget)
 
         tb_layout.addStretch(1)
 
         # Panel Visibility Toggle Buttons (with keyboard shortcuts)
-        self.toggle_left_btn = QPushButton("Left Panel ([)")
+        self.toggle_left_btn = QPushButton("Left ([)")
         self.toggle_left_btn.setCheckable(True)
         self.toggle_left_btn.setChecked(True)
         self.toggle_left_btn.setToolTip("Show/Hide Left Tools Panel (Shortcut: [)")
@@ -248,6 +308,13 @@ class MiavMainWindow(QMainWindow):
         self.toggle_meta_btn.setToolTip("Show/Hide Bottom Metadata Panel (Shortcut: M)")
         self.toggle_meta_btn.toggled.connect(self.set_metadata_panel_visible)
         tb_layout.addWidget(self.toggle_meta_btn)
+
+        self.toggle_log_btn = QPushButton("Log (G)")
+        self.toggle_log_btn.setCheckable(True)
+        self.toggle_log_btn.setChecked(False)
+        self.toggle_log_btn.setToolTip("Show/Hide Bottom Technical Log Panel (Shortcut: G)")
+        self.toggle_log_btn.toggled.connect(self.set_log_panel_visible)
+        tb_layout.addWidget(self.toggle_log_btn)
 
         root_layout.addWidget(toolbar)
 
@@ -414,12 +481,122 @@ class MiavMainWindow(QMainWindow):
         self.main_splitter.addWidget(self.left_panel_container)
 
         # ---------------------------------------------------------------------
-        # 2B. Center Viewport Area (Interchangeable 2D MPR & 3D Volume Viewers)
+        # 2B. Center Viewport Area (Top View Bar + Uncluttered 2D/3D Viewports)
         # ---------------------------------------------------------------------
         self.viewport_container = QWidget(self)
-        self.viewport_grid = QGridLayout(self.viewport_container)
+        vp_root_layout = QVBoxLayout(self.viewport_container)
+        vp_root_layout.setContentsMargins(0, 0, 0, 0)
+        vp_root_layout.setSpacing(5)
+
+        # Top Viewport Navigation & Overlay Bar (inspired by SynthSeg / NiiVue bar)
+        self.viewport_header_bar = QFrame(self.viewport_container)
+        self.viewport_header_bar.setObjectName("CardPanel")
+        self.viewport_header_bar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        vh_layout = QHBoxLayout(self.viewport_header_bar)
+        vh_layout.setContentsMargins(8, 4, 8, 4)
+        vh_layout.setSpacing(5)
+
+        self.view_tabs_layout = QHBoxLayout()
+        self.view_tabs_layout.setContentsMargins(0, 0, 0, 0)
+        self.view_tabs_layout.setSpacing(3)
+        vh_layout.addLayout(self.view_tabs_layout)
+
+        self.add_viewport_tab("3plane", "3-Plane")
+        self.add_viewport_tab("mammo_2_cc", "2V CC")
+        self.add_viewport_tab("mammo_2_mlo", "2V MLO")
+        self.add_viewport_tab("mammo_2_right", "2V R")
+        self.add_viewport_tab("mammo_2_left", "2V L")
+        for tid in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left"):
+            self.viewport_tabs[tid].setVisible(False)
+        self.add_viewport_tab("axial", "Axial")
+        self.add_viewport_tab("coronal", "Coronal")
+        self.add_viewport_tab("sagittal", "Sagittal")
+        self.add_viewport_tab("mammo_lcc", "LCC")
+        self.viewport_tabs["mammo_lcc"].setVisible(False)
+        self.add_viewport_tab("3d", "3D")
+        self.viewport_tabs["3plane"].setChecked(True)
+
+        # Separate control area for 3D Cut-Perspective View & CT 3D Shader
+        self.cut_sep_line = QFrame(self.viewport_header_bar)
+        self.cut_sep_line.setFrameShape(QFrame.Shape.VLine)
+        self.cut_sep_line.setStyleSheet("color: #2e2e38;")
+        vh_layout.addWidget(self.cut_sep_line)
+
+        self.cut_perspective_btn = QPushButton("3D Cut-Perspective")
+        self.cut_perspective_btn.setObjectName("CutPerspectiveBtn")
+        self.cut_perspective_btn.setCheckable(True)
+        self.cut_perspective_btn.setChecked(True)
+        self.cut_perspective_btn.setToolTip(
+            "Toggle 3D Brain Cut-Perspective view (cuts the 3D volume open along the active slice plane) vs Whole 3D"
+        )
+        self.cut_perspective_btn.toggled.connect(self._on_cut_perspective_toggled)
+        vh_layout.addWidget(self.cut_perspective_btn)
+
+        self.ct_3d_preset_combo = QComboBox(self.viewport_header_bar)
+        self.ct_3d_preset_combo.setToolTip("3D CT Volumetric Shader Preset")
+        self.ct_3d_preset_combo.addItem("3D Soft Tissue", "mri_translucent")
+        self.ct_3d_preset_combo.addItem("3D Bone / Dense", "ct_bone")
+        self.ct_3d_preset_combo.addItem("3D MIP (Vessels)", "mip")
+        self.ct_3d_preset_combo.currentIndexChanged.connect(self._on_ct_3d_preset_changed)
+        self.ct_3d_preset_combo.setVisible(False)
+        vh_layout.addWidget(self.ct_3d_preset_combo)
+
+        self.roi_top_btn = QPushButton("ROI")
+        self.roi_top_btn.setCheckable(True)
+        self.roi_top_btn.setStyleSheet("min-width: 0px; padding: 3px 7px;")
+        self.roi_top_btn.setToolTip("Draw a 2D Region of Interest rectangle on a slice to focus analytics on that subpart")
+        self.roi_top_btn.toggled.connect(self._on_top_roi_toggled)
+        vh_layout.addWidget(self.roi_top_btn)
+
+        self.center_view_btn = QPushButton("Center")
+        self.center_view_btn.setStyleSheet("min-width: 0px; padding: 3px 7px;")
+        self.center_view_btn.setToolTip(
+            "Re-center zoomed/panned image to fit viewport (Shortcut: F, Home, or Ctrl+0) — Ctrl+Left-Drag to pan"
+        )
+        self.center_view_btn.clicked.connect(self.center_views)
+        vh_layout.addWidget(self.center_view_btn)
+
+        self.toggle_sliders_btn = QPushButton("Sliders")
+        self.toggle_sliders_btn.setCheckable(True)
+        self.toggle_sliders_btn.setChecked(True)
+        self.toggle_sliders_btn.setToolTip("Show/Hide bottom slice sliders on 2D viewports")
+        self.toggle_sliders_btn.toggled.connect(self.set_slice_sliders_visible)
+        vh_layout.addWidget(self.toggle_sliders_btn)
+
+        vh_layout.addStretch(1)
+
+        # Dynamic Overlay Alpha Slider (shown automatically when a mask is present)
+        self.overlay_bar_widget = QWidget(self.viewport_header_bar)
+        ov_layout = QHBoxLayout(self.overlay_bar_widget)
+        ov_layout.setContentsMargins(0, 0, 0, 0)
+        ov_layout.setSpacing(4)
+        ov_lbl = QLabel("Overlay")
+        ov_lbl.setStyleSheet("color: #d4d4d8; font-weight: 500;")
+        ov_layout.addWidget(ov_lbl)
+
+        self.top_overlay_slider = QSlider(Qt.Orientation.Horizontal)
+        self.top_overlay_slider.setObjectName("OverlayTopSlider")
+        self.top_overlay_slider.setRange(0, 100)
+        self.top_overlay_slider.setValue(45)
+        self.top_overlay_slider.setFixedWidth(76)
+        self.top_overlay_slider.setToolTip("Adjust segmentation mask overlay alpha (0% to 100%)")
+        self.top_overlay_slider.valueChanged.connect(self._on_top_overlay_slider_changed)
+        ov_layout.addWidget(self.top_overlay_slider)
+
+        self.top_overlay_pct_lbl = QLabel("45%")
+        self.top_overlay_pct_lbl.setFixedWidth(34)
+        self.top_overlay_pct_lbl.setStyleSheet("font-family: Consolas; color: #e4e4e7; font-weight: 600;")
+        ov_layout.addWidget(self.top_overlay_pct_lbl)
+        self.overlay_bar_widget.setVisible(False)
+        vh_layout.addWidget(self.overlay_bar_widget)
+
+        vp_root_layout.addWidget(self.viewport_header_bar)
+
+        self.viewport_grid_widget = QWidget(self.viewport_container)
+        self.viewport_grid = QGridLayout(self.viewport_grid_widget)
         self.viewport_grid.setContentsMargins(0, 0, 0, 0)
         self.viewport_grid.setSpacing(6)
+        vp_root_layout.addWidget(self.viewport_grid_widget, 1)
 
         self.viewer_axial = SliceViewerWidget(initial_plane="axial", parent=self)
         self.viewer_sagittal = SliceViewerWidget(initial_plane="sagittal", parent=self)
@@ -427,6 +604,7 @@ class MiavMainWindow(QMainWindow):
         self.viewer_mammo_4 = SliceViewerWidget(initial_plane="lcc", parent=self)
         self.viewer_mammo_4.setVisible(False)
         self.viewer_3d = Volume3DViewerWidget(parent=self)
+        self.viewer_3d.mode_combo.currentIndexChanged.connect(self._sync_cut_perspective_btn_from_3d)
 
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.viewActivated.connect(self._on_viewer_activated)
@@ -435,6 +613,7 @@ class MiavMainWindow(QMainWindow):
             vw.windowLevelChanged.connect(self._on_viewport_wl_changed)
             vw.roiSelectionChanged.connect(self._on_viewport_roi_changed)
             vw.planeSwitched.connect(self._on_primary_plane_switched)
+            vw.viewPluginChanged.connect(lambda _vid: self._update_overlay_bar_visibility())
             vw.expandRequested.connect(lambda v=vw: self._toggle_expand_viewport(v))
 
         self.viewer_3d.sliceStepRequested.connect(lambda step, shift: self.active_viewer.step_slice(step, shift))
@@ -508,15 +687,21 @@ class MiavMainWindow(QMainWindow):
         self.main_splitter.setSizes([275, 765, 480])
 
         # ---------------------------------------------------------------------
-        # 3. Bottom Metadata Panel (Polars Engine)
+        # 3. Bottom Metadata Panel & Concise Technical Log Panel
         # ---------------------------------------------------------------------
         self.metadata_panel = MetadataInspectorPanel(self)
         self.metadata_panel.importCsvRequested.connect(self._on_import_csv_dialog)
         self.metadata_panel.closeRequested.connect(lambda: self.toggle_meta_btn.setChecked(False))
         self.vertical_splitter.addWidget(self.metadata_panel)
-        self.vertical_splitter.setSizes([720, 180])
+
+        self.log_panel = ActivityLogPanel(self)
+        self.log_panel.closeRequested.connect(lambda: self.toggle_log_btn.setChecked(False))
+        self.log_panel.setVisible(False)  # Default to closed
+        self.vertical_splitter.addWidget(self.log_panel)
+        self.vertical_splitter.setSizes([720, 180, 0])
 
         self.status_bar = QStatusBar(self)
+        self.status_bar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready — Click any slice view to select it for analytics and synchronize orthogonal planes.")
 
@@ -536,12 +721,22 @@ class MiavMainWindow(QMainWindow):
         QShortcut(QKeySequence("Z"), self, activated=self.undo_last_pen_annotation)
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo_last_pen_annotation)
         QShortcut(QKeySequence("C"), self, activated=self.clear_all_annotations)
+        QShortcut(QKeySequence("F"), self, activated=self.center_views)
+        QShortcut(QKeySequence("Home"), self, activated=self.center_views)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self.center_views)
         QShortcut(QKeySequence("R"), self, activated=self.reset_views)
         QShortcut(QKeySequence("["), self, activated=lambda: self.toggle_left_btn.setChecked(not self.toggle_left_btn.isChecked()))
         QShortcut(QKeySequence("]"), self, activated=lambda: self.toggle_right_btn.setChecked(not self.toggle_right_btn.isChecked()))
         QShortcut(QKeySequence("M"), self, activated=lambda: self.toggle_meta_btn.setChecked(not self.toggle_meta_btn.isChecked()))
-        QShortcut(QKeySequence("Up"), self, activated=lambda: self.active_viewer.step_slice(1, False))
-        QShortcut(QKeySequence("Down"), self, activated=lambda: self.active_viewer.step_slice(-1, False))
+        QShortcut(QKeySequence("G"), self, activated=lambda: self.toggle_log_btn.setChecked(not self.toggle_log_btn.isChecked()))
+        QShortcut(QKeySequence("Up"), self, activated=lambda: self._step_selected_view_arrow(-1, 0, False))
+        QShortcut(QKeySequence("Down"), self, activated=lambda: self._step_selected_view_arrow(1, 0, False))
+        QShortcut(QKeySequence("Left"), self, activated=lambda: self._step_selected_view_arrow(0, -1, False))
+        QShortcut(QKeySequence("Right"), self, activated=lambda: self._step_selected_view_arrow(0, 1, False))
+        QShortcut(QKeySequence("Shift+Up"), self, activated=lambda: self._step_selected_view_arrow(-1, 0, True))
+        QShortcut(QKeySequence("Shift+Down"), self, activated=lambda: self._step_selected_view_arrow(1, 0, True))
+        QShortcut(QKeySequence("Shift+Left"), self, activated=lambda: self._step_selected_view_arrow(0, -1, True))
+        QShortcut(QKeySequence("Shift+Right"), self, activated=lambda: self._step_selected_view_arrow(0, 1, True))
         QShortcut(QKeySequence("K"), self, activated=lambda: self.active_viewer.step_slice(1, False))
         QShortcut(QKeySequence("J"), self, activated=lambda: self.active_viewer.step_slice(-1, False))
 
@@ -563,7 +758,7 @@ class MiavMainWindow(QMainWindow):
             self.active_viewer.set_plane("single")
         else:
             if plane == "vol3d":
-                self.active_viewer.set_plane("vol3d")
+                self.set_viewport_tab("3d")
             elif self.layout_mode == "quad_mpr":
                 target = {
                     "axial": self.viewer_axial,
@@ -572,10 +767,164 @@ class MiavMainWindow(QMainWindow):
                 }.get(plane, self.viewer_axial)
                 self._select_active_viewer(target, trigger_analytics=True)
             else:
-                self.active_viewer.set_plane(plane)
+                self.set_viewport_tab(plane)
 
     # =========================================================================
-    # Panel Visibility Toggles (Zero-Lag When Closed)
+    # Top Viewport Bar Tabs, Cut-Perspective 3D & Overlay Slider
+    # =========================================================================
+    def add_viewport_tab(
+        self,
+        tab_id: str,
+        label: str,
+        custom_widget: Optional[QWidget] = None,
+    ) -> QPushButton:
+        """
+        Add a selectable view tab to the top viewport header bar (e.g., '3-Plane',
+        'Axial', 'Coronal', 'Sagittal', '3D', or future tabs like 'Volumes').
+        """
+        btn = QPushButton(label, self.viewport_header_bar)
+        btn.setObjectName("ViewportTabBtn")
+        btn.setCheckable(True)
+        btn.clicked.connect(lambda _checked=False, tid=tab_id: self.set_viewport_tab(tid))
+        self.view_tabs_layout.addWidget(btn)
+        self.viewport_tabs[tab_id] = btn
+        if custom_widget is not None:
+            custom_widget.setVisible(False)
+            self.custom_viewport_widgets[tab_id] = custom_widget
+            self.viewport_grid.addWidget(custom_widget, 0, 0, 2, 2)
+        return btn
+
+    def _sync_viewport_tab_buttons(self, active_id: str) -> None:
+        self.active_view_tab = active_id
+        for tid, btn in self.viewport_tabs.items():
+            btn.blockSignals(True)
+            btn.setChecked(tid == active_id)
+            btn.blockSignals(False)
+
+    def _restore_quad_grid_positions(self) -> None:
+        """Restore the 4 viewports to their standard 2x2 grid positions."""
+        self.viewport_grid.addWidget(self.viewer_axial, 0, 0, 1, 1)
+        self.viewport_grid.addWidget(self.viewer_sagittal, 0, 1, 1, 1)
+        self.viewport_grid.addWidget(self.viewer_coronal, 1, 0, 1, 1)
+        self.viewport_grid.addWidget(self.viewer_3d, 1, 1, 1, 1)
+        self.viewport_grid.addWidget(self.viewer_mammo_4, 1, 1, 1, 1)
+
+    def set_viewport_tab(self, tab_id: str) -> None:
+        """Switch viewport display according to the selected top bar tab."""
+        self._sync_viewport_tab_buttons(tab_id)
+        for cw in self.custom_viewport_widgets.values():
+            cw.setVisible(False)
+
+        if tab_id in self.custom_viewport_widgets:
+            for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4, self.viewer_3d):
+                v.setVisible(False)
+            self.custom_viewport_widgets[tab_id].setVisible(True)
+            return
+
+        if tab_id == "3plane":
+            self._restore_quad_grid_positions()
+            self.layout_combo.blockSignals(True)
+            self.layout_combo.setCurrentIndex(self.layout_combo.findData("quad_mpr"))
+            self.layout_combo.blockSignals(False)
+            self._apply_layout_mode("quad_mpr")
+        elif tab_id in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left"):
+            pair_map = {
+                "mammo_2_cc": (self.viewer_coronal, self.viewer_mammo_4),     # RCC | LCC
+                "mammo_2_mlo": (self.viewer_axial, self.viewer_sagittal),     # RMLO | LMLO
+                "mammo_2_right": (self.viewer_axial, self.viewer_coronal),    # RMLO | RCC
+                "mammo_2_left": (self.viewer_sagittal, self.viewer_mammo_4),  # LMLO | LCC
+            }
+            left_vw, right_vw = pair_map[tab_id]
+            self.viewport_grid.addWidget(left_vw, 0, 0, 2, 1)
+            self.viewport_grid.addWidget(right_vw, 0, 1, 2, 1)
+            for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4, self.viewer_3d):
+                is_pair = v in (left_vw, right_vw)
+                v.setVisible(is_pair)
+                v.set_expanded_state(False)
+            if self.active_viewer not in (left_vw, right_vw):
+                self._select_active_viewer(left_vw, trigger_analytics=True)
+            self.layout_mode = "dual_split"
+        elif tab_id in ("axial", "coronal", "sagittal", "mammo_lcc"):
+            self._restore_quad_grid_positions()
+            target_map = {
+                "axial": self.viewer_axial,
+                "coronal": self.viewer_coronal,
+                "sagittal": self.viewer_sagittal,
+                "mammo_lcc": self.viewer_mammo_4,
+            }
+            target_vw = target_map[tab_id]
+            if self.active_volume.study_mode == "mri_3d" and tab_id in ("axial", "coronal", "sagittal") and target_vw.plane != tab_id:
+                target_vw.set_plane(tab_id)
+            self._select_active_viewer(target_vw, trigger_analytics=True)
+            for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4, self.viewer_3d):
+                is_t = v is target_vw
+                v.setVisible(is_t)
+                v.set_expanded_state(is_t)
+            self.layout_mode = "single_focus"
+        elif tab_id == "3d":
+            self._restore_quad_grid_positions()
+            for v in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                v.setVisible(False)
+                v.set_expanded_state(False)
+            self.viewer_3d.setVisible(True)
+            self.viewer_3d.set_expanded_state(True)
+            self.layout_mode = "single_focus"
+
+    def _on_ct_3d_preset_changed(self) -> None:
+        preset = str(self.ct_3d_preset_combo.currentData())
+        idx = self.viewer_3d.shader_combo.findData(preset)
+        if idx >= 0:
+            self.viewer_3d.shader_combo.setCurrentIndex(idx)
+        self.log_event(f"ct 3d shader: {preset}")
+
+    def _on_cut_perspective_toggled(self, checked: bool) -> None:
+        target_mode = "sliced_volume" if checked else "whole_volume"
+        idx = self.viewer_3d.mode_combo.findData(target_mode)
+        if idx >= 0:
+            self.viewer_3d.mode_combo.setCurrentIndex(idx)
+        mode_lbl = "cut-perspective" if checked else "whole 3d"
+        self.log_event(f"3d view: {mode_lbl}")
+
+    def _sync_cut_perspective_btn_from_3d(self) -> None:
+        is_cut = self.viewer_3d.mode_combo.currentData() == "sliced_volume"
+        self.cut_perspective_btn.blockSignals(True)
+        self.cut_perspective_btn.setChecked(is_cut)
+        self.cut_perspective_btn.blockSignals(False)
+
+    def _on_top_roi_toggled(self, checked: bool) -> None:
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.roi_btn.setChecked(checked)
+        self.refresh_all_analytics(immediate=True)
+
+    def set_slice_sliders_visible(self, visible: bool) -> None:
+        """Show or hide the bottom slice slider bar across all 2D viewports."""
+        self.toggle_sliders_btn.blockSignals(True)
+        self.toggle_sliders_btn.setChecked(visible)
+        self.toggle_sliders_btn.blockSignals(False)
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.set_slice_slider_visible(visible)
+
+    def _on_top_overlay_slider_changed(self, value: int) -> None:
+        self.top_overlay_pct_lbl.setText(f"{value}%")
+        if self.mask_rho_slider.value() != value:
+            self.mask_rho_slider.setValue(value)
+        if self.active_volume.has_explicit_mask and all(
+            vw.view_plugin_id == "original_view"
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal)
+        ):
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal):
+                vw.set_view_plugin("mask_alpha_overlay")
+
+    def _update_overlay_bar_visibility(self) -> None:
+        has_mask_view = any(
+            vw.view_plugin_id != "original_view"
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4)
+        )
+        should_show = self.active_volume.has_explicit_mask or has_mask_view
+        self.overlay_bar_widget.setVisible(should_show)
+
+    # =========================================================================
+    # Panel Visibility Toggles & Bottom Metadata/Log Stacking
     # =========================================================================
     def set_left_panel_visible(self, visible: bool) -> None:
         self.left_panel_container.setVisible(visible)
@@ -597,6 +946,41 @@ class MiavMainWindow(QMainWindow):
         self.toggle_meta_btn.blockSignals(True)
         self.toggle_meta_btn.setChecked(visible)
         self.toggle_meta_btn.blockSignals(False)
+        self._update_bottom_panels_splitter()
+
+    def set_log_panel_visible(self, visible: bool) -> None:
+        self.log_panel.setVisible(visible)
+        self.toggle_log_btn.blockSignals(True)
+        self.toggle_log_btn.setChecked(visible)
+        self.toggle_log_btn.blockSignals(False)
+        self._update_bottom_panels_splitter()
+
+    def _update_bottom_panels_splitter(self) -> None:
+        """
+        Ensure that when Log is opened while Metadata is open, Metadata is pushed up
+        and Log opens below it; otherwise whichever panel is open occupies the bottom side.
+        """
+        meta_open = not self.metadata_panel.isHidden()
+        log_open = not self.log_panel.isHidden()
+        total_h = max(600, sum(self.vertical_splitter.sizes()) or self.height() or 900)
+        if meta_open and log_open:
+            meta_h = max(130, int(total_h * 0.19))
+            log_h = max(110, int(total_h * 0.15))
+            top_h = max(280, total_h - meta_h - log_h)
+            self.vertical_splitter.setSizes([top_h, meta_h, log_h])
+        elif meta_open and not log_open:
+            meta_h = max(140, int(total_h * 0.20))
+            self.vertical_splitter.setSizes([max(300, total_h - meta_h), meta_h, 0])
+        elif log_open and not meta_open:
+            log_h = max(130, int(total_h * 0.18))
+            self.vertical_splitter.setSizes([max(300, total_h - log_h), 0, log_h])
+        else:
+            self.vertical_splitter.setSizes([total_h, 0, 0])
+
+    def log_event(self, message: str) -> None:
+        """Append a concise entry to the bottom Technical Log panel."""
+        if hasattr(self, "log_panel") and self.log_panel is not None:
+            self.log_panel.append_log(message)
 
     def _on_slot_hide_requested(self, slot: AnalyticsSlotWidget) -> None:
         slot.setVisible(False)
@@ -708,10 +1092,27 @@ class MiavMainWindow(QMainWindow):
     def _on_layout_combo_changed(self) -> None:
         mode = str(self.layout_combo.currentData())
         self._apply_layout_mode(mode)
+        if mode == "quad_mpr":
+            self._sync_viewport_tab_buttons("3plane")
 
     def cycle_layout_mode(self) -> None:
-        idx = (self.layout_combo.currentIndex() + 1) % self.layout_combo.count()
-        self.layout_combo.setCurrentIndex(idx)
+        if self.active_imaging_type == "xray_mammo":
+            tab_order = [
+                "3plane",
+                "mammo_2_cc",
+                "mammo_2_mlo",
+                "mammo_2_right",
+                "mammo_2_left",
+                "axial",
+                "sagittal",
+                "coronal",
+                "mammo_lcc",
+            ]
+        else:
+            tab_order = ["3plane", "axial", "coronal", "sagittal", "3d"]
+        cur_idx = tab_order.index(self.active_view_tab) if self.active_view_tab in tab_order else 0
+        next_tab = tab_order[(cur_idx + 1) % len(tab_order)]
+        self.set_viewport_tab(next_tab)
 
     def _toggle_expand_viewport(self, target_widget: QWidget) -> None:
         all_views = [
@@ -729,17 +1130,216 @@ class MiavMainWindow(QMainWindow):
                 v.set_expanded_state(is_target)
             if isinstance(target_widget, SliceViewerWidget):
                 self._select_active_viewer(target_widget, trigger_analytics=True)
+                if target_widget.plane in ("axial", "coronal", "sagittal"):
+                    self._sync_viewport_tab_buttons(target_widget.plane)
+            elif target_widget is self.viewer_3d:
+                self._sync_viewport_tab_buttons("3d")
         else:
-            self._apply_layout_mode(self.layout_mode)
+            self._sync_viewport_tab_buttons("3plane")
+            self._restore_quad_grid_positions()
+        if self.active_view_tab in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left") and sm not in ("single_mammo", "multi_mammo"):
+            self.layout_mode = "quad_mpr"
+            self._sync_viewport_tab_buttons("3plane")
+        self._apply_layout_mode(self.layout_mode)
 
     # =========================================================================
-    # Study Loading, Modality Mode Switching & View Configuration
+    # Modality Landing Page & Imaging-Type Specific Workspace Profiles
     # =========================================================================
+    def show_launcher_page(self) -> None:
+        """Display the startup Modality Selection page (MRI / CT / X-Ray Mammo)."""
+        self.root_stack.setCurrentWidget(self.launcher_page)
+        self.status_bar.showMessage("Select an imaging modality (MRI, CT, or X-Ray / Mammography) to enter its tailored workspace.")
+
+    @staticmethod
+    def _infer_imaging_type_for_volume(volume: MedicalVolume) -> str:
+        if volume.is_ct_hu or volume.modality == "CT":
+            return "ct"
+        if volume.modality in ("MG", "DX", "CR", "XRAY") or volume.study_mode in ("single_mammo", "multi_mammo"):
+            return "xray_mammo"
+        return "mri"
+
+    def _study_matches_imaging_type(self, volume: MedicalVolume, imaging_type: str) -> bool:
+        return self._infer_imaging_type_for_volume(volume) == imaging_type
+
+    def _refresh_study_combo_for_imaging_type(
+        self,
+        imaging_type: str,
+        preferred_volume: Optional[MedicalVolume] = None,
+    ) -> Optional[MedicalVolume]:
+        self.study_combo.blockSignals(True)
+        self.study_combo.clear()
+        matching: list[tuple[int, MedicalVolume]] = [
+            (idx, st)
+            for idx, st in enumerate(self.studies)
+            if self._study_matches_imaging_type(st, imaging_type)
+        ]
+        if not matching:
+            matching = list(enumerate(self.studies))
+
+        selected_combo_idx = 0
+        chosen_vol = matching[0][1] if matching else None
+        for combo_i, (st_idx, st) in enumerate(matching):
+            self.study_combo.addItem(st.name, st_idx)
+            if preferred_volume is not None and st is preferred_volume:
+                selected_combo_idx = combo_i
+                chosen_vol = st
+
+        if self.study_combo.count() > 0:
+            self.study_combo.setCurrentIndex(selected_combo_idx)
+        self.study_combo.blockSignals(False)
+        return chosen_vol
+
+    def _populate_wl_presets_for_imaging_type(self, imaging_type: str) -> None:
+        self.wl_combo.blockSignals(True)
+        self.wl_combo.clear()
+        if imaging_type == "ct":
+            self.wl_combo.addItem("CT Brain (80/40)", "ct_brain")
+            self.wl_combo.addItem("CT Stroke (40/40)", "ct_stroke")
+            self.wl_combo.addItem("CT Subdural (200/80)", "ct_subdural")
+            self.wl_combo.addItem("CT Bone (2000/500)", "ct_bone")
+            self.wl_combo.addItem("CT Lung (1500/-600)", "ct_lung")
+            self.wl_combo.addItem("CT Abdomen (400/50)", "ct_abdomen")
+            self.wl_combo.addItem("Auto HU", "auto")
+        elif imaging_type == "xray_mammo":
+            self.wl_combo.addItem("Auto Mammo Contrast", "auto")
+            self.wl_combo.addItem("Dense Parenchyma", "mammo_dense")
+            self.wl_combo.addItem("Calcification High-Contrast", "mammo_calc")
+            self.wl_combo.addItem("Skin Line / Periphery", "mammo_skin")
+        else:  # "mri"
+            self.wl_combo.addItem("Auto (MRI)", "auto")
+            self.wl_combo.addItem("T1 High Contrast", "mri_t1_high")
+            self.wl_combo.addItem("T2 / FLAIR Bright", "mri_t2_bright")
+            # Keep CT presets available at bottom for programmatic compatibility
+            self.wl_combo.addItem("CT Brain (80/40)", "ct_brain")
+            self.wl_combo.addItem("CT Stroke (40/40)", "ct_stroke")
+            self.wl_combo.addItem("CT Bone (2000/500)", "ct_bone")
+            self.wl_combo.addItem("CT Lung (1500/-600)", "ct_lung")
+        self.wl_combo.blockSignals(False)
+
+    def _apply_imaging_type_profile(
+        self,
+        imaging_type: str,
+        preferred_volume: Optional[MedicalVolume] = None,
+    ) -> None:
+        """
+        Configure and declutter the workspace UI for the active imaging type:
+          - 'mri': 3D/2D MRI & FastMRI (3-Plane + 3D Cut-Perspective, no CT HU or Mammo clutter)
+          - 'ct': Computed Tomography (Hounsfield Units active, CT WL presets, 3D Bone/MIP shader, no Mode clutter)
+          - 'xray_mammo': Digital Mammography & 2D X-Ray (4-View RMLO/LMLO/RCC/LCC tabs, CSV loader, no 3D clutter)
+        """
+        if imaging_type not in ("mri", "ct", "xray_mammo"):
+            imaging_type = "mri"
+        self.active_imaging_type = imaging_type
+
+        badge_map = {
+            "mri": ("MRI", "color: #93c5fd; background-color: #1e293b; border: 1px solid #3b82f6; border-radius: 4px; padding: 3px 8px; font-weight: 700; font-size: 11px;"),
+            "ct": ("CT · HU", "color: #7dd3fc; background-color: #0c2d48; border: 1px solid #0284c7; border-radius: 4px; padding: 3px 8px; font-weight: 700; font-size: 11px;"),
+            "xray_mammo": ("X-RAY", "color: #fde68a; background-color: #3b2a10; border: 1px solid #d97706; border-radius: 4px; padding: 3px 8px; font-weight: 700; font-size: 11px;"),
+        }
+        badge_text, badge_style = badge_map[imaging_type]
+        self.modality_badge_lbl.setText(badge_text)
+        self.modality_badge_lbl.setStyleSheet(badge_style)
+
+        # Declutter top toolbar controls by imaging type (Mode is controlled via the viewport bar below)
+        is_ct = imaging_type == "ct"
+        is_mammo = imaging_type == "xray_mammo"
+
+        self.open_dir_btn.setVisible(is_ct or is_mammo)
+        self.ct_hu_cb.setVisible(is_ct)
+        self.mode_lbl.setVisible(False)
+        self.modality_mode_combo.setVisible(False)
+        self.mammo_csv_top_btn.setVisible(is_mammo)
+        self.toggle_sliders_btn.setVisible(not is_mammo)
+
+        # Configure top viewport bar tabs & 3D controls per imaging type
+        if is_mammo:
+            self.viewport_tabs["3plane"].setText("4-View")
+            for tid in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left"):
+                self.viewport_tabs[tid].setVisible(True)
+            self.viewport_tabs["axial"].setText("RMLO")
+            self.viewport_tabs["sagittal"].setText("LMLO")
+            self.viewport_tabs["coronal"].setText("RCC")
+            self.viewport_tabs["mammo_lcc"].setText("LCC")
+            self.viewport_tabs["mammo_lcc"].setVisible(True)
+            self.viewport_tabs["3d"].setVisible(False)
+            self.cut_sep_line.setVisible(False)
+            self.cut_perspective_btn.setVisible(False)
+            self.ct_3d_preset_combo.setVisible(False)
+        else:
+            self.viewport_tabs["3plane"].setText("3-Plane")
+            for tid in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left"):
+                self.viewport_tabs[tid].setVisible(False)
+            self.viewport_tabs["axial"].setText("Axial")
+            self.viewport_tabs["coronal"].setText("Coronal")
+            self.viewport_tabs["sagittal"].setText("Sagittal")
+            self.viewport_tabs["mammo_lcc"].setVisible(False)
+            self.viewport_tabs["3d"].setVisible(True)
+            self.cut_sep_line.setVisible(True)
+            self.cut_perspective_btn.setVisible(True)
+            self.ct_3d_preset_combo.setVisible(is_ct)
+
+        self._populate_wl_presets_for_imaging_type(imaging_type)
+        self._refresh_study_combo_for_imaging_type(imaging_type, preferred_volume=preferred_volume)
+
+    def select_imaging_type(self, imaging_type: str, load_default_study: bool = True) -> None:
+        """
+        Enter the visual workspace tailored for `imaging_type` ('mri', 'ct', or 'xray_mammo').
+        """
+        if imaging_type not in ("mri", "ct", "xray_mammo"):
+            imaging_type = "mri"
+
+        self._apply_imaging_type_profile(imaging_type)
+        self.root_stack.setCurrentWidget(self.workspace_page)
+        self.log_event(f"workspace selected: {imaging_type}")
+
+        if load_default_study:
+            matching = [st for st in self.studies if self._study_matches_imaging_type(st, imaging_type)]
+            target_vol = matching[0] if matching else self.active_volume
+            if imaging_type == "ct" and not target_vol.is_ct_hu:
+                target_vol.set_ct_hounsfield_mode(True)
+            self._load_study_into_views(target_vol, enter_workspace=True)
+
+    def _on_launcher_open_file(self, imaging_type: str) -> None:
+        self.select_imaging_type(imaging_type, load_default_study=True)
+        self._on_open_file_dialog()
+
+    def _on_launcher_open_folder(self, imaging_type: str) -> None:
+        self.select_imaging_type(imaging_type, load_default_study=True)
+        self._on_open_folder_dialog()
+
+    # =========================================================================
+    # Study Loading, CT/HU Mode, Modality Mode Switching & View Configuration
+    # =========================================================================
+    def _on_ct_hu_toggled(self, checked: bool) -> None:
+        """Toggle CT / Hounsfield units visualization mode on the active volume."""
+        self.active_volume.set_ct_hounsfield_mode(checked)
+        self.wl_combo.blockSignals(True)
+        if checked:
+            idx_ct = self.wl_combo.findData("ct_brain")
+            if idx_ct >= 0:
+                self.wl_combo.setCurrentIndex(idx_ct)
+        else:
+            idx_auto = self.wl_combo.findData("auto")
+            if idx_auto >= 0:
+                self.wl_combo.setCurrentIndex(idx_auto)
+        self.wl_combo.blockSignals(False)
+
+        ww, wl = self.active_volume.default_window_level()
+        self._on_viewport_wl_changed(ww, wl)
+        self.viewer_3d.set_volume(self.active_volume)
+        eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
+        self.metadata_panel.set_volume(self.active_volume, plane=eff_plane, slice_idx=self.active_viewer.slice_idx)
+        self.refresh_all_analytics(immediate=True)
+        state_str = f"enabled (wl={wl:.0f}, ww={ww:.0f})" if checked else "disabled (auto window)"
+        self.log_event(f"ct / hounsfield units: {state_str}")
+        self.status_bar.showMessage(f"CT / Hounsfield Units visualization {state_str}.")
+
     def _on_modality_mode_changed(self) -> None:
         new_mode = str(self.modality_mode_combo.currentData())
         if self.active_volume.study_mode != new_mode:
             self.active_volume.study_mode = new_mode
             self._configure_views_for_study_mode(self.active_volume)
+            self.log_event(f"mode switched: {new_mode}")
 
     def _configure_views_for_study_mode(self, volume: MedicalVolume) -> None:
         sm = volume.study_mode
@@ -782,16 +1382,33 @@ class MiavMainWindow(QMainWindow):
             else:
                 self._select_active_viewer(self.active_viewer, trigger_analytics=False)
 
+        self._restore_quad_grid_positions()
+        if self.active_view_tab in ("mammo_2_cc", "mammo_2_mlo", "mammo_2_right", "mammo_2_left") and sm not in ("single_mammo", "multi_mammo"):
+            self.layout_mode = "quad_mpr"
+            self._sync_viewport_tab_buttons("3plane")
         self._apply_layout_mode(self.layout_mode)
+        self._update_overlay_bar_visibility()
         eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
         self.metadata_panel.set_volume(volume, plane=eff_plane, slice_idx=self.active_viewer.slice_idx)
         self.refresh_all_analytics(immediate=True)
 
-    def _load_study_into_views(self, volume: MedicalVolume) -> None:
+    def _load_study_into_views(self, volume: MedicalVolume, enter_workspace: bool = True) -> None:
         self.active_volume = volume
         self.active_roi_bounds = None
 
+        inferred_type = self._infer_imaging_type_for_volume(volume)
+        self._apply_imaging_type_profile(inferred_type, preferred_volume=volume)
+        if enter_workspace:
+            self.root_stack.setCurrentWidget(self.workspace_page)
+
         self.clear_all_annotations()
+        if not volume.has_explicit_mask:
+            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                vw.set_view_plugin("original_view")
+
+        self.ct_hu_cb.blockSignals(True)
+        self.ct_hu_cb.setChecked(bool(volume.is_ct_hu))
+        self.ct_hu_cb.blockSignals(False)
 
         self.modality_mode_combo.blockSignals(True)
         idx = self.modality_mode_combo.findData(volume.study_mode)
@@ -800,31 +1417,43 @@ class MiavMainWindow(QMainWindow):
         self.modality_mode_combo.blockSignals(False)
 
         self._configure_views_for_study_mode(volume)
+        self.log_event(f"image loaded: {volume.name}")
+        self.log_event(volume.concise_modality_summary())
         self.status_bar.showMessage(
             f"Loaded '{volume.name}' — Mode: {volume.study_mode} | Shape: {volume.shape} | Modality: {volume.modality} | Spacing: {volume.spacing} mm"
         )
 
-    def open_path(self, path: str | Path, study_mode: Optional[str] = None) -> None:
+    def open_path(
+        self,
+        path: str | Path,
+        study_mode: Optional[str] = None,
+        is_ct_hu: Optional[bool] = None,
+    ) -> None:
         try:
-            vol = load_medical_path(path, study_mode=study_mode)
+            if is_ct_hu is None:
+                use_ct_hu = (self.active_imaging_type == "ct") or bool(self.ct_hu_cb.isChecked())
+            else:
+                use_ct_hu = bool(is_ct_hu)
+            vol = load_medical_path(path, study_mode=study_mode, is_ct_hu=use_ct_hu)
             self.studies.append(vol)
-            self.study_combo.blockSignals(True)
-            self.study_combo.addItem(vol.name)
-            self.study_combo.setCurrentIndex(self.study_combo.count() - 1)
-            self.study_combo.blockSignals(False)
-            self._load_study_into_views(vol)
+            self._load_study_into_views(vol, enter_workspace=True)
         except Exception as exc:
             QMessageBox.critical(self, "Failed to Open Medical Image", f"Could not load {path}:\n\n{exc}")
 
     def _on_open_file_dialog(self) -> None:
+        title_map = {
+            "mri": "Open 3D/2D MRI or FastMRI Image (.nii, .nii.gz, .h5, .dcm)",
+            "ct": "Open CT Volume or Slice (.dcm, .nii, .nii.gz)",
+            "xray_mammo": "Open Digital Mammography or 2D X-Ray (.dcm, .png, .tif)",
+        }
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open 2D/3D MRI, CT, FastMRI, or X-Ray Image",
+            title_map.get(self.active_imaging_type, "Open Medical Image"),
             str(Path.cwd()),
             "Medical Images (*.nii *.nii.gz *.h5 *.hdf5 *.dcm *.ima *.npy *.npz *.png *.tif *.tiff *.jpg);;All Files (*)",
         )
         if file_path:
-            self.open_path(file_path)
+            self.open_path(file_path, is_ct_hu=(self.active_imaging_type == "ct"))
 
     def _on_open_folder_dialog(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -833,11 +1462,16 @@ class MiavMainWindow(QMainWindow):
             str(Path.cwd()),
         )
         if folder:
-            self.open_path(folder)
+            self.open_path(folder, is_ct_hu=(self.active_imaging_type == "ct"))
 
     def _on_study_combo_changed(self, index: int) -> None:
-        if 0 <= index < len(self.studies):
-            self._load_study_into_views(self.studies[index])
+        if index < 0:
+            return
+        st_idx = self.study_combo.itemData(index)
+        if isinstance(st_idx, int) and 0 <= st_idx < len(self.studies):
+            self._load_study_into_views(self.studies[st_idx], enter_workspace=True)
+        elif 0 <= index < len(self.studies):
+            self._load_study_into_views(self.studies[index], enter_workspace=True)
 
     def _on_import_csv_dialog(self) -> None:
         csv_path, _ = QFileDialog.getOpenFileName(
@@ -848,20 +1482,29 @@ class MiavMainWindow(QMainWindow):
         )
         if csv_path:
             try:
-                attach_external_csv(self.active_volume, csv_path)
+                df = attach_external_csv(self.active_volume, csv_path)
                 eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
                 self.metadata_panel.set_volume(
                     self.active_volume,
                     plane=eff_plane,
                     slice_idx=self.active_viewer.slice_idx,
                 )
+                self.log_event(f"csv loaded: {Path(csv_path).name} ({df.height} rows)")
                 self.status_bar.showMessage(f"Imported metadata CSV: {Path(csv_path).name}")
             except Exception as exc:
                 QMessageBox.warning(self, "CSV Import Error", f"Failed to parse CSV:\n{exc}")
 
     # =========================================================================
-    # Synchronized 3D Crosshair Navigation & Single-View Analytics Dispatch
+    # Synchronized 3D Crosshair Navigation, Hovered Scroll & Arrow Keys
     # =========================================================================
+    def _step_selected_view_arrow(self, dy: int, dx: int, shift: bool = False) -> None:
+        """
+        Move the crosshair (up/down/left/right) on the SELECTED 2D view (`self.active_viewer`),
+        updating the other orthogonal views' slices and 3D view accordingly.
+        """
+        mult = 10 if shift else 1
+        self.active_viewer.move_cursor_by_delta(dy * mult, dx * mult)
+
     def _current_zyx_indices(self) -> tuple[int, int, int]:
         z = self.viewer_axial.slice_idx
         y = self.viewer_coronal.slice_idx
@@ -876,13 +1519,45 @@ class MiavMainWindow(QMainWindow):
         return (z, y, x)
 
     def _on_viewport_slice_changed(self, plane: str, slice_idx: int) -> None:
-        # Synchronize any companion viewport displaying the same anatomical plane (e.g., side-by-side Segmentation Mask view)
+        """
+        When any 2D viewport's slice changes (e.g., via middle mouse scroll on the hovered view):
+        - Does NOT change `self.active_viewer`.
+        - Synchronizes companion viewports on the same plane.
+        - Moves the crosshair lines on the other two orthogonal 2D views to reflect the new slice.
+        - Moves the 3D view cut/ortho planes.
+        """
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
-            if vw is not self.active_viewer and vw.plane == plane and vw.slice_idx != slice_idx:
+            if vw.plane == plane and vw.slice_idx != slice_idx:
                 vw.set_slice_and_cursor_silent(slice_idx, vw.slice_canvas.cursor_yx)
+
+        Z, Y, X = self.active_volume.shape
+        z = self.viewer_axial.slice_idx
+        y = self.viewer_coronal.slice_idx
+        x = self.viewer_sagittal.slice_idx
+        if plane == "axial":
+            z = int(np.clip(slice_idx, 0, max(0, Z - 1)))
+            r_z = (Z - 1) - z
+            if self.viewer_coronal.plane == "coronal":
+                self.viewer_coronal.set_cursor_silent((r_z, x))
+            if self.viewer_sagittal.plane == "sagittal":
+                self.viewer_sagittal.set_cursor_silent((r_z, y))
+        elif plane == "coronal":
+            y = int(np.clip(slice_idx, 0, max(0, Y - 1)))
+            r_z = (Z - 1) - z
+            if self.viewer_axial.plane == "axial":
+                self.viewer_axial.set_cursor_silent((y, x))
+            if self.viewer_sagittal.plane == "sagittal":
+                self.viewer_sagittal.set_cursor_silent((r_z, y))
+        elif plane == "sagittal":
+            x = int(np.clip(slice_idx, 0, max(0, X - 1)))
+            r_z = (Z - 1) - z
+            if self.viewer_axial.plane == "axial":
+                self.viewer_axial.set_cursor_silent((y, x))
+            if self.viewer_coronal.plane == "coronal":
+                self.viewer_coronal.set_cursor_silent((r_z, x))
+
         if plane in ("axial", "sagittal", "coronal"):
             self.viewer_3d.set_active_cut_plane(plane)
-        z, y, x = self._current_zyx_indices()
         self.viewer_3d.set_slice_indices(z, y, x)
         self.metadata_panel.update_live_slice(plane, slice_idx)
         self.refresh_all_analytics(immediate=False)
@@ -943,6 +1618,10 @@ class MiavMainWindow(QMainWindow):
 
     def _on_viewport_roi_changed(self, roi_bounds: Optional[tuple[int, int, int, int]]) -> None:
         self.active_roi_bounds = roi_bounds
+        eff = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
+        plane_label = eff.upper() if eff in ("rcc", "lcc", "rmlo", "lmlo") else eff.title()
+        roi_suffix = " [ROI]" if roi_bounds is not None else ""
+        self.analytics_header_lbl.setText(f"Analytics — Active: {plane_label}{roi_suffix}")
         self.refresh_all_analytics(immediate=False)
 
     def _on_primary_plane_switched(self, new_plane: str) -> None:
@@ -1013,22 +1692,42 @@ class MiavMainWindow(QMainWindow):
     # =========================================================================
     def _on_wl_preset_changed(self) -> None:
         preset = str(self.wl_combo.currentData())
-        presets = {
+        ct_presets = {
             "ct_brain": (80.0, 40.0),
             "ct_stroke": (40.0, 40.0),
+            "ct_subdural": (200.0, 80.0),
             "ct_bone": (2000.0, 500.0),
             "ct_lung": (1500.0, -600.0),
+            "ct_abdomen": (400.0, 50.0),
         }
-        if preset in presets:
-            ww, wl = presets[preset]
+        base_ww, base_wl = self.active_volume.default_window_level()
+        if preset in ct_presets:
+            ww, wl = ct_presets[preset]
+        elif preset == "mri_t1_high":
+            ww, wl = base_ww * 0.72, base_wl * 1.05
+        elif preset == "mri_t2_bright":
+            ww, wl = base_ww * 1.25, base_wl * 0.90
+        elif preset == "mammo_dense":
+            ww, wl = base_ww * 0.78, base_wl * 1.08
+        elif preset == "mammo_calc":
+            ww, wl = base_ww * 0.55, base_wl * 1.15
+        elif preset == "mammo_skin":
+            ww, wl = base_ww * 1.35, base_wl * 0.75
         else:
-            ww, wl = self.active_volume.default_window_level()
+            ww, wl = base_ww, base_wl
         self._on_viewport_wl_changed(ww, wl)
+
+    def center_views(self) -> None:
+        """Re-center all zoomed/panned 2D slice viewports and 3D camera without resetting Window/Level."""
+        for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+            vw.center_image(reset_zoom=True)
+        self.viewer_3d.reset_camera()
+        self.status_bar.showMessage("Centered image views and reset zoom (Ctrl+Left-Drag to pan zoomed images).")
 
     def reset_views(self) -> None:
         ww, wl = self.active_volume.default_window_level()
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
-            vw.slice_canvas.zoom = 1.0
+            vw.center_image(reset_zoom=True)
             vw.set_window_level(ww, wl)
         self.viewer_3d.reset_camera()
         self.status_bar.showMessage("Reset zoom, pan, Window/Level, and 3D camera.")
@@ -1043,15 +1742,18 @@ class MiavMainWindow(QMainWindow):
         self.nav_mode_btn.setChecked(mode == "navigate")
         self.laser_mode_btn.setChecked(mode == "laser")
         self.pen_mode_btn.setChecked(mode == "pen")
+        self.pen_tools_widget.setVisible(mode == "pen")
 
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_annotation_mode(mode, pin_to_slice=pin, pen_shape=self.pen_shape)
         self.viewer_3d.set_annotation_mode(mode, pin_to_slice=pin, pen_shape=self.pen_shape)
+        for slot in (self.slot_a, self.slot_b, self.slot_c):
+            slot.set_annotation_mode(mode, pin_to_slice=pin, pen_shape=self.pen_shape)
 
         msg = {
-            "navigate": "Cursor Mode (N) — Click any slice to synchronize orthogonal views and select it for analytics.",
-            "laser": "Laser Mode (L) — Click and drag for a fading red presentation trail.",
-            "pen": f"Pen Mode (P) [{self.pen_shape.title()}] — Click and drag to draw; press C to clear.",
+            "navigate": "Cursor Mode (N) — Click any slice to select it for analytics (Ctrl+Left-Drag to pan zoomed image).",
+            "laser": "Laser Mode (L) — Click and drag over any image or analytics plot for a fading red presentation trail.",
+            "pen": f"Pen Mode (P) [{self.pen_shape.title()}] — Click and drag to draw on images or analytics plots; press C to clear.",
         }.get(mode, "")
         self.status_bar.showMessage(msg)
 
@@ -1064,9 +1766,11 @@ class MiavMainWindow(QMainWindow):
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_annotation_mode(self.annotation_mode, pin_to_slice=checked, pen_shape=self.pen_shape)
         self.viewer_3d.set_annotation_mode(self.annotation_mode, pin_to_slice=checked, pen_shape=self.pen_shape)
+        for slot in (self.slot_a, self.slot_b, self.slot_c):
+            slot.set_annotation_mode(self.annotation_mode, pin_to_slice=checked, pen_shape=self.pen_shape)
 
     def undo_last_pen_annotation(self) -> None:
-        """Undo the most recently drawn Pen stroke across all viewports."""
+        """Undo the most recently drawn Pen stroke across all viewports and analytics slots."""
         overlays = [
             self.viewer_axial.slice_canvas.annotation_overlay,
             self.viewer_axial.vol3d_canvas.annotation_overlay,
@@ -1077,6 +1781,9 @@ class MiavMainWindow(QMainWindow):
             self.viewer_mammo_4.slice_canvas.annotation_overlay,
             self.viewer_mammo_4.vol3d_canvas.annotation_overlay,
             self.viewer_3d.canvas.annotation_overlay,
+            self.slot_a.annotation_overlay,
+            self.slot_b.annotation_overlay,
+            self.slot_c.annotation_overlay,
         ]
         latest_overlay = max(overlays, key=lambda ov: ov.last_stroke_timestamp())
         if latest_overlay.last_stroke_timestamp() > 0.0 and latest_overlay.undo_last_stroke():
@@ -1088,6 +1795,8 @@ class MiavMainWindow(QMainWindow):
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.clear_annotations()
         self.viewer_3d.clear_annotations()
+        for slot in (self.slot_a, self.slot_b, self.slot_c):
+            slot.clear_annotations()
         self.status_bar.showMessage("Cleared annotations.")
 
     # =========================================================================
@@ -1108,9 +1817,18 @@ class MiavMainWindow(QMainWindow):
             eff_plane = "axial" if self.active_viewer.plane == "vol3d" else self.active_viewer.plane
             mammo_target = eff_plane if eff_plane in ("rcc", "lcc", "rmlo", "lmlo") else None
             attach_external_mask(self.active_volume, mask_path, mammo_view=mammo_target)
-            for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
-                vw.refresh_slice(force=True)
+            if all(
+                vw.view_plugin_id == "original_view"
+                for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4)
+            ):
+                for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                    vw.set_view_plugin("mask_alpha_overlay")
+            else:
+                for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
+                    vw.refresh_slice(force=True)
+            self._update_overlay_bar_visibility()
             self.refresh_all_analytics(immediate=True)
+            self.log_event(f"mask loaded: {Path(mask_path).name}")
             self.status_bar.showMessage(f"Loaded segmentation mask: {Path(mask_path).name}")
         except Exception as exc:
             QMessageBox.warning(self, "Mask Load Error", f"Could not load segmentation mask:\n{exc}")
@@ -1121,7 +1839,9 @@ class MiavMainWindow(QMainWindow):
         self.active_volume.mask_name = ""
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.refresh_slice(force=True)
+        self._update_overlay_bar_visibility()
         self.refresh_all_analytics(immediate=True)
+        self.log_event("mask reset: automatic segmentation")
         self.status_bar.showMessage("Reverted to automatic clinical/anatomical segmentation mask.")
 
     def show_mask_as_another_view(self) -> None:
@@ -1137,6 +1857,8 @@ class MiavMainWindow(QMainWindow):
         companion.set_slice_and_cursor_silent(src_vw.slice_idx, src_vw.slice_canvas.cursor_yx)
         companion.set_view_plugin("segmentation_mask")
         self._select_active_viewer(src_vw, trigger_analytics=False)
+        self._update_overlay_bar_visibility()
+        self.log_event(f"mask view: standalone ({eff_plane})")
         self.status_bar.showMessage(
             f"Showing standalone Segmentation Mask in companion viewport ({eff_plane.upper()} #{src_vw.slice_idx + 1})."
         )
@@ -1149,10 +1871,14 @@ class MiavMainWindow(QMainWindow):
         vw = self.active_viewer
         if vw.view_plugin_id == "mask_alpha_overlay":
             vw.set_view_plugin("original_view")
+            self._update_overlay_bar_visibility()
+            self.log_event("mask overlay: disabled")
             self.status_bar.showMessage("Mask Alpha Overlay disabled (Original View).")
         else:
             vw.set_view_plugin("mask_alpha_overlay")
+            self._update_overlay_bar_visibility()
             rho = self.mask_rho_slider.value() / 100.0
+            self.log_event(f"mask overlay: enabled ({int(round(rho * 100))}%)")
             self.status_bar.showMessage(
                 f"Mask Alpha Overlay enabled: (1 - {rho:.2f})·Image + {rho:.2f}·Mask (where Mask=1)."
             )
@@ -1160,11 +1886,22 @@ class MiavMainWindow(QMainWindow):
     def set_mask_rho(self, rho: float) -> None:
         val = int(round(np.clip(rho, 0.0, 1.0) * 100.0))
         self.mask_rho_slider.setValue(val)
+        if self.top_overlay_slider.value() != val:
+            self.top_overlay_slider.blockSignals(True)
+            self.top_overlay_slider.setValue(val)
+            self.top_overlay_slider.blockSignals(False)
+            self.top_overlay_pct_lbl.setText(f"{val}%")
 
     def _on_mask_params_changed(self) -> None:
-        rho = self.mask_rho_slider.value() / 100.0
+        val = self.mask_rho_slider.value()
+        rho = val / 100.0
         color = str(self.mask_color_combo.currentData())
         self.rho_lbl.setText(f"Alpha (ρ): {rho:.2f}")
+        if self.top_overlay_slider.value() != val:
+            self.top_overlay_slider.blockSignals(True)
+            self.top_overlay_slider.setValue(val)
+            self.top_overlay_slider.blockSignals(False)
+        self.top_overlay_pct_lbl.setText(f"{val}%")
         for vw in (self.viewer_axial, self.viewer_sagittal, self.viewer_coronal, self.viewer_mammo_4):
             vw.set_mask_params(rho, color)
 
@@ -1187,6 +1924,8 @@ class MiavMainWindow(QMainWindow):
     def _on_view_plugin_double_clicked(self, item: QListWidgetItem) -> None:
         vid = str(item.data(Qt.ItemDataRole.UserRole))
         self.active_viewer.set_view_plugin(vid)
+        self._update_overlay_bar_visibility()
+        self.log_event(f"view plugin: {vid}")
         self.status_bar.showMessage(f"Applied view '{vid}' to active viewport.")
 
     # =========================================================================
