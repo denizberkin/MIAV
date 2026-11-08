@@ -81,6 +81,8 @@ class FastSliceCanvas(QWidget):
         self.roi_mode: bool = False
         self.roi_bounds: Optional[tuple[int, int, int, int]] = None
         self._roi_start_yx: Optional[tuple[int, int]] = None
+        self._left_drag_inside_image: bool = False
+        self._ctrl_left_panning: bool = False
 
         self._last_mouse_pos: Optional[QPointF] = None
         self._cached_qimage: Optional[QImage] = None
@@ -130,6 +132,30 @@ class FastSliceCanvas(QWidget):
         rx = (vw - rw) * 0.5 + self.pan_offset.x()
         ry = (vh - rh) * 0.5 + self.pan_offset.y()
         return QRectF(rx, ry, rw, rh)
+
+    def is_point_inside_image(self, pos: QPointF) -> bool:
+        """Return True if `pos` lies inside the rendered image bounds (excluding black letterbox margins)."""
+        return self._compute_image_rect().contains(pos)
+
+    def zoom_at_point(self, factor: float, anchor_pos: Optional[QPointF] = None) -> None:
+        """
+        Zoom in/out by `factor`, keeping the image point directly under `anchor_pos`
+        (the mouse cursor) fixed on screen so off-center regions (e.g. left/right mammograms)
+        can be inspected seamlessly.
+        """
+        old_zoom = float(self.zoom)
+        new_zoom = float(np.clip(old_zoom * factor, 0.4, 8.0))
+        if abs(new_zoom - old_zoom) < 1e-6:
+            return
+        if anchor_pos is not None:
+            vw = float(max(1, self.width()))
+            vh = float(max(1, self.height()))
+            vc = QPointF(vw * 0.5, vh * 0.5)
+            ratio = new_zoom / max(1e-6, old_zoom)
+            rel = anchor_pos - vc - self.pan_offset
+            self.pan_offset = self.pan_offset + rel * (1.0 - ratio)
+        self.zoom = new_zoom
+        self.update()
 
     def _screen_to_slice_yx(self, pos: QPointF) -> tuple[int, int]:
         rect = self._compute_image_rect()
@@ -202,13 +228,18 @@ class FastSliceCanvas(QWidget):
         cy, cx = self.cursor_yx
         cy = int(np.clip(cy, 0, h - 1))
         cx = int(np.clip(cx, 0, w - 1))
-        if self.show_crosshair:
+        if self.show_crosshair and self.plane in ("axial", "sagittal", "coronal") and self.num_slices > 1:
             pt = self._slice_yx_to_screen(cy, cx)
-            painter.setPen(QPen(QColor(96, 165, 250, 120), 1.0, Qt.PenStyle.DashLine))
-            painter.drawLine(QPointF(target_rect.left(), pt.y()), QPointF(target_rect.right(), pt.y()))
-            painter.drawLine(QPointF(pt.x(), target_rect.top()), QPointF(pt.x(), target_rect.bottom()))
-            painter.setPen(QPen(QColor("#ef4444"), 1.3))
-            painter.drawEllipse(pt, 3.0, 3.0)
+            gap = 5.0
+            painter.setPen(QPen(QColor(220, 38, 38, 195), 1.15, Qt.PenStyle.SolidLine))
+            if pt.x() - gap > target_rect.left():
+                painter.drawLine(QPointF(target_rect.left(), pt.y()), QPointF(pt.x() - gap, pt.y()))
+            if pt.x() + gap < target_rect.right():
+                painter.drawLine(QPointF(pt.x() + gap, pt.y()), QPointF(target_rect.right(), pt.y()))
+            if pt.y() - gap > target_rect.top():
+                painter.drawLine(QPointF(pt.x(), target_rect.top()), QPointF(pt.x(), pt.y() - gap))
+            if pt.y() + gap < target_rect.bottom():
+                painter.drawLine(QPointF(pt.x(), pt.y() + gap), QPointF(pt.x(), target_rect.bottom()))
 
         if self.roi_bounds is not None:
             y0, y1, x0, x1 = self.roi_bounds
@@ -242,29 +273,58 @@ class FastSliceCanvas(QWidget):
             f"WL: {self._fmt_num(self.window_level)}/{self._fmt_num(self.window_width)}",
         )
 
-        painter.setPen(QColor("#71717a"))
-        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.setPen(QColor("#a1a1aa"))
+        painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        top_lbl, bot_lbl, left_lbl, right_lbl = "", "", "", ""
         if self.plane in ("rcc", "lcc", "rmlo", "lmlo"):
             top_lbl = "S" if "mlo" in self.plane else "L"
             left_lbl = "R" if self.plane.startswith("r") else "L"
         elif self.plane == "single":
-            top_lbl = ""
-            left_lbl = ""
-        else:
-            top_lbl = "A" if self.plane == "axial" else "S"
-            left_lbl = "R" if self.plane in ("axial", "coronal") else "A"
+            pass
+        elif self.plane == "axial":
+            top_lbl, bot_lbl, left_lbl, right_lbl = "A", "P", "R", "L"
+        elif self.plane == "coronal":
+            top_lbl, bot_lbl, left_lbl, right_lbl = "S", "I", "R", "L"
+        elif self.plane == "sagittal":
+            top_lbl, bot_lbl, left_lbl, right_lbl = "S", "I", "A", "P"
+
         if top_lbl:
-            painter.drawText(int(self.width() * 0.5 - 4), 14, top_lbl)
+            painter.drawText(int(self.width() * 0.5 - 4), 15, top_lbl)
+        if bot_lbl:
+            painter.drawText(int(self.width() * 0.5 - 4), self.height() - 6, bot_lbl)
         if left_lbl:
             painter.drawText(6, int(self.height() * 0.5 + 4), left_lbl)
+        if right_lbl:
+            painter.drawText(self.width() - 14, int(self.height() * 0.5 + 4), right_lbl)
 
         painter.end()
+
+    def center_image(self, reset_zoom: bool = True) -> None:
+        """Re-center the panned/zoomed slice image inside the viewport."""
+        self.pan_offset = QPointF(0.0, 0.0)
+        if reset_zoom:
+            self.zoom = 1.0
+        self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.canvasActivated.emit()
         pos = event_pos_f(event)
         self._last_mouse_pos = pos
         if event.button() == Qt.MouseButton.LeftButton:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # Ctrl + Left-Click + Drag pans/moves the zoomed image without changing crosshair or views
+                self._ctrl_left_panning = True
+                self._left_drag_inside_image = False
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+            self._ctrl_left_panning = False
+            if not self.is_point_inside_image(pos):
+                # Clicking in the black letterbox margin selects the view without clipping/moving the crosshair
+                self._left_drag_inside_image = False
+                event.accept()
+                return
+            self._left_drag_inside_image = True
             ry, cx = self._screen_to_slice_yx(pos)
             if self.roi_mode:
                 self._roi_start_yx = (ry, cx)
@@ -272,13 +332,23 @@ class FastSliceCanvas(QWidget):
                 self.update()
             else:
                 self.cursor_yx = (ry, cx)
-                self.cursorMoved.emit(ry, cx)
+                if self.show_crosshair and self.plane in ("axial", "sagittal", "coronal") and self.num_slices > 1:
+                    self.cursorMoved.emit(ry, cx)
                 self.update()
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event_pos_f(event)
         if event.buttons() & Qt.MouseButton.LeftButton:
+            if self._ctrl_left_panning and self._last_mouse_pos is not None:
+                delta = pos - self._last_mouse_pos
+                self.pan_offset += delta
+                self._last_mouse_pos = pos
+                self.update()
+                return
+            if not self._left_drag_inside_image:
+                self._last_mouse_pos = pos
+                return
             ry, cx = self._screen_to_slice_yx(pos)
             if self.roi_mode and self._roi_start_yx is not None:
                 sy, sx = self._roi_start_yx
@@ -290,7 +360,8 @@ class FastSliceCanvas(QWidget):
                 self.update()
             else:
                 self.cursor_yx = (ry, cx)
-                self.cursorMoved.emit(ry, cx)
+                if self.show_crosshair and self.plane in ("axial", "sagittal", "coronal") and self.num_slices > 1:
+                    self.cursorMoved.emit(ry, cx)
                 self.update()
         elif (event.buttons() & Qt.MouseButton.RightButton) and self._last_mouse_pos is not None:
             dx = float(pos.x() - self._last_mouse_pos.x())
@@ -304,18 +375,21 @@ class FastSliceCanvas(QWidget):
         self._last_mouse_pos = pos
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
+        if self._ctrl_left_panning:
+            self._ctrl_left_panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         self._last_mouse_pos = None
         self._roi_start_yx = None
+        self._left_drag_inside_image = False
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        self.canvasActivated.emit()
+        # Scrolling works on the hovered 2D view independently without changing the selected view
         delta = event.angleDelta().y()
         if delta == 0:
             return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            factor = 1.12 if delta > 0 else 0.89
-            self.zoom = float(np.clip(self.zoom * factor, 0.4, 6.0))
-            self.update()
+            factor = 1.15 if delta > 0 else (1.0 / 1.15)
+            self.zoom_at_point(factor, event_pos_f(event))
         else:
             step = 1 if delta > 0 else -1
             shift_held = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -325,7 +399,7 @@ class FastSliceCanvas(QWidget):
 
 class SliceViewerWidget(QFrame):
     """
-    Interchangeable 2D Slice / 3D Volume Viewport Card.
+    2D Slice Viewport Card.
     Highlights with a blue rectangle when selected as the active analytics source.
     """
 
@@ -350,12 +424,19 @@ class SliceViewerWidget(QFrame):
         self.mask_rho: float = 0.45
         self.mask_color: str = "emerald"
         self.is_active_analytics_source: bool = False
+        self.show_slice_slider: bool = True
         self._needs_refresh_on_show: bool = False
         self._is_expanded: bool = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+
+        # Keep legacy per-view top buttons in a hidden container so viewports have no button clutter
+        self.controls_container = QWidget(self)
+        self.controls_container.setVisible(False)
+        ctrl_layout = QVBoxLayout(self.controls_container)
+        ctrl_layout.setContentsMargins(0, 0, 0, 0)
 
         top_bar = QHBoxLayout()
         top_bar.setSpacing(4)
@@ -404,16 +485,12 @@ class SliceViewerWidget(QFrame):
 
         top_bar.addStretch(1)
 
-        self.slice_lbl = QLabel("0 / 0")
-        self.slice_lbl.setStyleSheet("font-family: Consolas; color: #a1a1aa; font-weight: 600;")
-        top_bar.addWidget(self.slice_lbl)
-
         self.expand_btn = QPushButton("Expand")
         self.expand_btn.setToolTip("Expand this viewport to fill the view area (or Shrink back)")
         self.expand_btn.clicked.connect(self.expandRequested.emit)
         top_bar.addWidget(self.expand_btn)
 
-        layout.addLayout(top_bar)
+        ctrl_layout.addLayout(top_bar)
 
         self.stack = QStackedWidget(self)
         self.slice_canvas = FastSliceCanvas(self)
@@ -422,19 +499,25 @@ class SliceViewerWidget(QFrame):
         self.stack.addWidget(self.vol3d_canvas)
         layout.addWidget(self.stack, 1)
 
-        bottom_bar = QHBoxLayout()
+        # Compact bottom Slice Slider bar (can be toggled on/off via top bar setting)
+        self.slider_bar_widget = QWidget(self)
+        bottom_bar = QHBoxLayout(self.slider_bar_widget)
+        bottom_bar.setContentsMargins(6, 1, 6, 2)
         bottom_bar.setSpacing(6)
-        bottom_bar.addWidget(QLabel("Slice:"))
         self.slice_slider = QSlider(Qt.Orientation.Horizontal)
         self.slice_slider.setRange(0, 0)
         self.slice_slider.valueChanged.connect(self._on_slider_changed)
         bottom_bar.addWidget(self.slice_slider, 1)
-        layout.addLayout(bottom_bar)
+
+        self.slice_lbl = QLabel("0 / 0")
+        self.slice_lbl.setStyleSheet("font-family: Consolas; font-size: 10px; color: #a1a1aa; font-weight: 600;")
+        bottom_bar.addWidget(self.slice_lbl)
+        layout.addWidget(self.slider_bar_widget)
 
         self.slice_canvas.sliceScrolled.connect(self.step_slice)
         self.slice_canvas.annotation_overlay.wheelScrolled.connect(self.step_slice)
         self.vol3d_canvas.sliceScrolled.connect(self.step_slice)
-        self.vol3d_canvas.annotation_overlay.wheelScrolled.connect(self.step_slice)
+        self.vol3d_canvas.annotation_overlay.wheelScrolled.connect(lambda step, _shift: self.vol3d_canvas.zoom_by_steps(step))
         self.slice_canvas.cursorMoved.connect(self._on_cursor_moved)
         self.slice_canvas.windowLevelDragged.connect(self._on_wl_dragged)
         self.slice_canvas.roiChanged.connect(self.roiSelectionChanged.emit)
@@ -465,6 +548,18 @@ class SliceViewerWidget(QFrame):
     def set_expanded_state(self, expanded: bool) -> None:
         self._is_expanded = expanded
         self.expand_btn.setText("Shrink" if expanded else "Expand")
+
+    def set_slice_slider_visible(self, visible: bool) -> None:
+        """Enable or disable the bottom slice slider bar on this 2D viewport."""
+        self.show_slice_slider = bool(visible)
+        self._update_slider_bar_visibility()
+
+    def _update_slider_bar_visibility(self) -> None:
+        if self.volume is None or self.plane == "vol3d":
+            self.slider_bar_widget.setVisible(False)
+            return
+        n_slices = self.volume.num_slices(self.plane)
+        self.slider_bar_widget.setVisible(self.show_slice_slider and n_slices > 1)
 
     def configure_for_study_mode(self, study_mode: str, preferred_plane: str) -> None:
         """
@@ -533,11 +628,15 @@ class SliceViewerWidget(QFrame):
         self.slice_canvas.zoom = 1.0
         self.slice_canvas.pan_offset = QPointF(0.0, 0.0)
         self.slice_canvas.roi_bounds = None
+        self.slice_canvas.show_crosshair = bool(
+            volume.is_3d and not volume.is_mammography and eff_plane in ("axial", "sagittal", "coronal")
+        )
         self.roi_btn.setChecked(False)
 
         h, w = raw_init.shape[:2]
         self.slice_canvas.cursor_yx = (h // 2, w // 2)
 
+        self._update_slider_bar_visibility()
         self.refresh_slice(force=True)
 
     def set_slice_and_cursor_silent(self, new_slice_idx: int, cursor_yx: tuple[int, int]) -> None:
@@ -556,6 +655,33 @@ class SliceViewerWidget(QFrame):
         self.slice_slider.blockSignals(False)
         self.slice_canvas.cursor_yx = cursor_yx
         self.refresh_slice()
+
+    def set_cursor_silent(self, cursor_yx: tuple[int, int]) -> None:
+        """Update the 2D crosshair position without changing slice or firing recursive signals."""
+        h, w = self.slice_canvas.display_slice.shape[:2]
+        ry = int(np.clip(cursor_yx[0], 0, max(0, h - 1)))
+        cx = int(np.clip(cursor_yx[1], 0, max(0, w - 1)))
+        if self.slice_canvas.cursor_yx != (ry, cx):
+            self.slice_canvas.cursor_yx = (ry, cx)
+            if self.isVisible():
+                self.slice_canvas.update()
+
+    def move_cursor_by_delta(self, dy: int, dx: int) -> None:
+        """
+        Move the 2D crosshair on this viewport by `(dy, dx)` pixels/voxels
+        (used by Up/Down/Left/Right arrow keys on the selected view) and emit `cursorChanged`.
+        """
+        if self.volume is None:
+            return
+        h, w = self.slice_canvas.display_slice.shape[:2]
+        cur_y, cur_x = self.slice_canvas.cursor_yx
+        new_y = int(np.clip(cur_y + dy, 0, max(0, h - 1)))
+        new_x = int(np.clip(cur_x + dx, 0, max(0, w - 1)))
+        self.slice_canvas.cursor_yx = (new_y, new_x)
+        if self.isVisible():
+            self.slice_canvas.update()
+        eff_plane = "axial" if self.plane == "vol3d" else self.plane
+        self.cursorChanged.emit(eff_plane, self.slice_idx, new_y, new_x)
 
     def set_plane(self, plane: str) -> None:
         idx = self.plane_combo.findData(plane)
@@ -605,6 +731,9 @@ class SliceViewerWidget(QFrame):
         else:
             self.stack.setCurrentIndex(0)
             if self.volume is not None:
+                self.slice_canvas.show_crosshair = bool(
+                    self.volume.is_3d and not self.volume.is_mammography and new_plane in ("axial", "sagittal", "coronal")
+                )
                 n_slices = self.volume.num_slices(new_plane)
                 mid = min(self.slice_idx, max(0, n_slices - 1))
                 self.slice_slider.blockSignals(True)
@@ -613,6 +742,7 @@ class SliceViewerWidget(QFrame):
                 self.slice_slider.blockSignals(False)
                 self.slice_idx = mid
                 self.refresh_slice(force=True)
+        self._update_slider_bar_visibility()
         self.planeSwitched.emit(new_plane)
 
     def _on_cmap_changed(self) -> None:
@@ -628,7 +758,6 @@ class SliceViewerWidget(QFrame):
             self.slice_canvas.update()
 
     def _on_slider_changed(self, value: int) -> None:
-        self.viewActivated.emit(self)
         self.slice_idx = int(value)
         self.refresh_slice()
         eff_plane = "axial" if self.plane == "vol3d" else self.plane
@@ -637,13 +766,17 @@ class SliceViewerWidget(QFrame):
     def step_slice(self, step: int, shift_held: bool = False) -> None:
         if self.volume is None:
             return
-        self.viewActivated.emit(self)
         eff_plane = "axial" if self.plane == "vol3d" else self.plane
         n_slices = self.volume.num_slices(eff_plane)
         mult = 10 if shift_held else 1
         new_idx = int(np.clip(self.slice_idx + step * mult, 0, max(0, n_slices - 1)))
         if new_idx != self.slice_idx:
+            self.slice_idx = new_idx
+            self.slice_slider.blockSignals(True)
             self.slice_slider.setValue(new_idx)
+            self.slice_slider.blockSignals(False)
+            self.refresh_slice()
+            self.sliceChanged.emit(eff_plane, self.slice_idx)
 
     def refresh_slice(self, force: bool = False) -> None:
         if self.volume is None:
@@ -749,6 +882,10 @@ class SliceViewerWidget(QFrame):
         self.vol3d_canvas.annotation_overlay.pin_to_slice = pin_to_slice
         self.vol3d_canvas.annotation_overlay.set_pen_shape(pen_shape)
         self.vol3d_canvas.annotation_overlay.set_mode(mode)
+
+    def center_image(self, reset_zoom: bool = True) -> None:
+        """Re-center the slice image inside this viewport."""
+        self.slice_canvas.center_image(reset_zoom=reset_zoom)
 
     def clear_annotations(self) -> None:
         self.slice_canvas.annotation_overlay.clear_annotations()
