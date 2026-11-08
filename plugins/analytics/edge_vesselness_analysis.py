@@ -23,8 +23,10 @@ def plot_edge_boundary_map(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.04, right=0.96, top=0.84, bottom=0.08, wspace=0.15)
     ax_edge, ax_log = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    step = max(1, max(ctx.image_2d.shape[:2]) // 450)
-    img = ctx.image_2d[::step, ::step].astype(np.float32)
+    has_roi = ctx.roi_2d is not None and ctx.roi_2d.size >= 16
+    src_2d = ctx.roi_2d if has_roi else ctx.image_2d
+    step = max(1, max(src_2d.shape[:2]) // 450)
+    img = src_2d[::step, ::step].astype(np.float32)
     vmin, vmax = float(np.min(img)), float(np.max(img))
     norm = (img - vmin) / max(1e-12, vmax - vmin)
 
@@ -35,11 +37,12 @@ def plot_edge_boundary_map(ctx: AnalysisContext, fig) -> None:
     rgb[edges_fine] = [0.38, 0.65, 0.98]
     rgb[edges_coarse] = [0.96, 0.25, 0.37]
 
+    roi_tag = " [ROI]" if has_roi else ""
     ax_edge.imshow(np.clip(rgb, 0.0, 1.0), aspect="auto")
-    ax_edge.set_title("Canny Edges", color="#e4e4e7", fontsize=8.5)
+    ax_edge.set_title(f"Canny Edges{roi_tag}", color="#e4e4e7", fontsize=8.5)
     ax_edge.axis("off")
 
     log_resp = np.abs(ndi.gaussian_laplace(norm, sigma=1.6))
     ax_log.imshow(log_resp, cmap="viridis", aspect="auto")
-    ax_log.set_title("Laplacian Energy", color="#e4e4e7", fontsize=8.5)
+    ax_log.set_title(f"Laplacian Energy{roi_tag}", color="#e4e4e7", fontsize=8.5)
     ax_log.axis("off")

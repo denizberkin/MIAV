@@ -91,13 +91,15 @@ def plot_intensity_histogram(ctx: AnalysisContext, fig) -> None:
     except Exception:
         pass
 
-    mean_v = float(np.mean(fg))
-    std_v = float(np.std(fg))
+    stat_arr = ctx.roi_2d.ravel() if (ctx.roi_2d is not None and ctx.roi_2d.size >= 16) else fg
+    roi_prefix = "[ROI] " if (ctx.roi_2d is not None and ctx.roi_2d.size >= 16) else ""
+    mean_v = float(np.mean(stat_arr))
+    std_v = float(np.std(stat_arr))
     mean_str = f"{mean_v:.2e}" if 0 < abs(mean_v) < 0.05 else f"{mean_v:.1f}"
     std_str = f"{std_v:.2e}" if 0 < abs(std_v) < 0.05 else f"{std_v:.1f}"
 
     ax.set_title(
-        f"{ctx.plane.title()} #{ctx.slice_idx + 1} — Mean: {mean_str} | SD: {std_str}",
+        f"{roi_prefix}{ctx.plane.title()} #{ctx.slice_idx + 1} — Mean: {mean_str} | SD: {std_str}",
         color="#e4e4e7",
         fontsize=9,
         fontweight="bold",

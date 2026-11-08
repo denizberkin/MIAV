@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import numpy as np
 from skimage.filters import threshold_multiotsu
-from sklearn.cluster import KMeans
 
 from miav.plugin_sdk import AnalysisContext, analytics_plugin
 
@@ -23,8 +22,10 @@ def plot_tissue_segmentation(ctx: AnalysisContext, fig) -> None:
     fig.subplots_adjust(left=0.05, right=0.96, top=0.84, bottom=0.18, wspace=0.35)
     ax_map, ax_bar = fig.subplots(1, 2, subplot_kw={"facecolor": "#18181c"})
 
-    step = max(1, max(ctx.image_2d.shape[:2]) // 450)
-    img = ctx.image_2d[::step, ::step].astype(np.float32)
+    has_roi = ctx.roi_2d is not None and ctx.roi_2d.size >= 16
+    src_2d = ctx.roi_2d if has_roi else ctx.image_2d
+    step = max(1, max(src_2d.shape[:2]) // 450)
+    img = src_2d[::step, ::step].astype(np.float32)
     vmin = float(np.min(img))
     non_min = img[img > vmin + 1e-12]
     bg_thresh = float(np.percentile(non_min, 8.0)) if non_min.size > 64 else vmin
@@ -34,34 +35,27 @@ def plot_tissue_segmentation(ctx: AnalysisContext, fig) -> None:
     seg_labels = np.zeros_like(img, dtype=np.int32)
     fractions = [0.0, 0.0, 0.0]
 
-    if fg_vals.size > 64 and float(np.std(fg_vals)) > 1e-12:
+    if fg_vals.size > 16 and float(np.std(fg_vals)) > 1e-12:
         try:
-            if fg_vals.size <= 4000:
-                km = KMeans(n_clusters=3, n_init=2, random_state=0)
-                sub = fg_vals[:: max(1, fg_vals.size // 1200)].reshape(-1, 1)
-                km.fit(sub)
-                centers = np.sort(km.cluster_centers_.ravel())
-                t1 = 0.5 * (centers[0] + centers[1])
-                t2 = 0.5 * (centers[1] + centers[2])
-            else:
-                thresholds = threshold_multiotsu(fg_vals, classes=3)
-                t1, t2 = float(thresholds[0]), float(thresholds[1])
-
-            c1 = fg_mask & (img <= t1)
-            c2 = fg_mask & (img > t1) & (img <= t2)
-            c3 = fg_mask & (img > t2)
-            seg_labels[c1] = 1
-            seg_labels[c2] = 2
-            seg_labels[c3] = 3
-
-            total_fg = float(max(1, np.count_nonzero(fg_mask)))
-            fractions = [
-                100.0 * float(np.count_nonzero(c1)) / total_fg,
-                100.0 * float(np.count_nonzero(c2)) / total_fg,
-                100.0 * float(np.count_nonzero(c3)) / total_fg,
-            ]
+            thresholds = threshold_multiotsu(fg_vals, classes=3)
+            t1, t2 = float(thresholds[0]), float(thresholds[1])
         except Exception:
-            pass
+            p33, p66 = np.percentile(fg_vals, [33.3, 66.7])
+            t1, t2 = float(p33), float(p66)
+
+        c1 = fg_mask & (img <= t1)
+        c2 = fg_mask & (img > t1) & (img <= t2)
+        c3 = fg_mask & (img > t2)
+        seg_labels[c1] = 1
+        seg_labels[c2] = 2
+        seg_labels[c3] = 3
+
+        total_fg = float(max(1, np.count_nonzero(fg_mask)))
+        fractions = [
+            100.0 * float(np.count_nonzero(c1)) / total_fg,
+            100.0 * float(np.count_nonzero(c2)) / total_fg,
+            100.0 * float(np.count_nonzero(c3)) / total_fg,
+        ]
 
     rgb = np.zeros((*img.shape, 3), dtype=np.float32)
     rgb[seg_labels == 1] = [0.38, 0.65, 0.98]
